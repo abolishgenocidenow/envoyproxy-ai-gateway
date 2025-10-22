@@ -25,6 +25,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	ctrlutil "sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	gwapiv1 "sigs.k8s.io/gateway-api/apis/v1"
+	gwapiv1alpha2 "sigs.k8s.io/gateway-api/apis/v1alpha2"
 
 	aigv1a1 "github.com/envoyproxy/ai-gateway/api/v1alpha1"
 	"github.com/envoyproxy/ai-gateway/internal/internalapi"
@@ -156,7 +157,7 @@ func (c *MCPRouteController) ensureSecurityPolicy(ctx context.Context, mcpRoute 
 	// support it yet, we currently do not set the sectionName to avoid compatibility issues.
 	// The jwt and API key auth filter will be removed from backend routes in the extension server.
 	// TODO: use sectionName to target the MCP proxy rule only when the HTTPRouteRule name is in stable channel.
-	securityPolicySpec.TargetRefs = []gwapiv1.LocalPolicyTargetReferenceWithSectionName{
+	securityPolicySpec.TargetRefs = []gwapiv1alpha2.LocalPolicyTargetReferenceWithSectionName{
 		{
 			LocalPolicyTargetReference: gwapiv1.LocalPolicyTargetReference{
 				Group: "gateway.networking.k8s.io",
@@ -244,7 +245,7 @@ func (c *MCPRouteController) ensureOAuthProtectedResourceMetadataBTP(ctx context
 	}
 
 	// Target the HTTPRoute MCP proxy rule only.
-	backendTrafficPolicy.Spec.TargetRefs = []gwapiv1.LocalPolicyTargetReferenceWithSectionName{
+	backendTrafficPolicy.Spec.TargetRefs = []gwapiv1alpha2.LocalPolicyTargetReferenceWithSectionName{
 		{
 			LocalPolicyTargetReference: gwapiv1.LocalPolicyTargetReference{
 				Group: "gateway.networking.k8s.io",
@@ -252,7 +253,7 @@ func (c *MCPRouteController) ensureOAuthProtectedResourceMetadataBTP(ctx context
 				Name:  gwapiv1.ObjectName(httpRouteName),
 			},
 			// TODO: this filter should be applied to the MCP proxy rule only, enable sectionName when supported in Envoy Gateway.
-			// SectionName: ptr.To(gwapiv1a2.SectionName(mcpProxyRuleName)).
+			// SectionName: ptr.To(gwapiv1alpha2.SectionName(mcpProxyRuleName)).
 		},
 	}
 
