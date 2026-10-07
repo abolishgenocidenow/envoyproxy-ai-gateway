@@ -55,7 +55,9 @@ type ConfigWatcher interface {
 }
 
 // ConfigWatcherFactory constructs independent watcher state per enabled
-// consumer. Acquire transport resources in Run so construction does not require
+// consumer. A factory can capture an application-owned client shared by its
+// watchers; the application cleans it up after MainWithOptions returns. Acquire
+// watcher-owned transport resources in Run so construction does not require
 // cleanup if a later factory call fails.
 type ConfigWatcherFactory func(WatchOptions) (ConfigWatcher, error)
 

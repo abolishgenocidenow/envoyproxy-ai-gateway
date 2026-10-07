@@ -27,6 +27,8 @@ import (
 
 // httpWatcher illustrates a downstream transport, with no internal imports.
 // The caller owns client TLS/authentication, redirects and credential rotation.
+// LLM and MCP subscriptions can share the client but keep independent checkpoints.
+// Run cancels its requests; it does not close the application-owned client.
 type httpWatcher struct {
 	client   *http.Client
 	endpoint string
@@ -98,27 +100,32 @@ func (w *httpWatcher) Run(ctx context.Context, apply mainlib.ApplyConfig) error 
 func ExampleMainWithOptions() {
 	// A downstream binary parses its own URL/authentication flags first, then
 	// passes only extproc flags to mainlib. A custom watcher needs no bundle path.
-	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	opts := mainlib.Options{
-		MaxConfigBytes: 128 << 20,
-		ConfigWatcherFactory: func(o mainlib.WatchOptions) (mainlib.ConfigWatcher, error) {
-			endpoint, _ := url.Parse("https://config.example/extproc-config")
-			query := endpoint.Query()
-			query.Set("payloadVersion", o.PayloadVersion)
-			switch o.Target {
-			case mainlib.ConfigTargetLLM, mainlib.ConfigTargetMCP:
-				query.Set("scope", string(o.Target))
-			default:
-				return nil, fmt.Errorf("unsupported target %q", o.Target)
-			}
-			endpoint.RawQuery = query.Encode()
-			return &httpWatcher{client: client, endpoint: endpoint.String(), maxBytes: o.MaxConfigBytes, interval: 5 * time.Second}, nil
-		},
-	}
-	run := func(ctx context.Context, args []string) error {
+	// The application supplies a configured client: HTTPS/mTLS, authentication,
+	// proxy, redirect policy and connection timeouts stay outside mainlib. See the
+	// README for mTLS setup. The factory captures this shared client; each call
+	// creates only the state for one scoped subscription.
+	run := func(ctx context.Context, args []string, client *http.Client) error {
+		opts := mainlib.Options{
+			MaxConfigBytes: 128 << 20,
+			ConfigWatcherFactory: func(o mainlib.WatchOptions) (mainlib.ConfigWatcher, error) {
+				endpoint, _ := url.Parse("https://config.example/extproc-config")
+				query := endpoint.Query()
+				query.Set("payloadVersion", o.PayloadVersion)
+				switch o.Target {
+				case mainlib.ConfigTargetLLM, mainlib.ConfigTargetMCP:
+					query.Set("scope", string(o.Target))
+				default:
+					return nil, fmt.Errorf("unsupported target %q", o.Target)
+				}
+				endpoint.RawQuery = query.Encode()
+				return &httpWatcher{client: client, endpoint: endpoint.String(), maxBytes: o.MaxConfigBytes, interval: 5 * time.Second}, nil
+			},
+		}
 		return mainlib.MainWithOptions(ctx, args, io.Discard, opts)
 	}
-	_ = run // Call from the downstream main with its signal-aware context.
+	// Call run from the application with its signal-aware context and client.
+	// The application closes shared transport resources after run returns.
+	_ = run
 }
 
 func TestHTTPWatcherCheckpoint(t *testing.T) {
