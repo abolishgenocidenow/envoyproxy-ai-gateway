@@ -77,9 +77,44 @@ type configReceiver struct {
 	receiver filterapi.ConfigReceiver
 }
 
+// startConfigWatchers starts and supervises scoped subscriptions supplied by a
+// custom factory. The plural refers to consumers: MainWithOptions supplies one
+// LLM receiver and, when enabled, one MCP receiver. This function does not merge
+// configuration sources or consolidate transport connections. Watchers may share
+// an application-owned client, but this helper does not deduplicate their reads.
+// The default bundle-file path currently starts separately in MainWithOptions.
+//
+// Each receiver gets its own watcher and apply callback because acceptance is
+// independent: an LLM apply must not acknowledge an MCP update that failed.
+// Checkpoints and retries belong to the watcher. The callback serializes applies
+// to its receiver, decodes and version-checks complete documents, and reports the
+// existing loader's result. It neither orders source revisions nor makes updates
+// across consumers atomic; watchers must deliver replacements in source order.
+//
+// Construction finishes for every consumer before any Run call starts. A factory
+// error therefore leaves no running subscriptions. Run calls then execute
+// concurrently, and startup waits until every receiver has completed a
+// LoadConfig call successfully. This is a one-time startup gate, not a freshness
+// check: after startup, each watcher independently retries transient failures.
+// MainWithOptions starts serving only after this function returns successfully.
+//
+// ctx and fail must come from the same context.WithCancelCause call. A watcher
+// returning while its context is live, even with nil, calls fail to cancel
+// MainWithOptions and its other subscriptions. Startup cancellation joins them
+// before returning the cause. On success, the caller owns stop, which cancels the watch
+// context and waits for Run calls to finish. Run must honor cancellation and join
+// its callback goroutines; stop cannot forcibly terminate a misbehaving watcher.
+//
+// Installed runtime configuration receives ctx, not the narrower watch context
+// or a fetch deadline: credential handlers may retain it for later requests.
+// Stopping subscriptions alone does not cancel that runtime context; process
+// shutdown does. Shared transport cleanup remains the application's responsibility
+// after MainWithOptions returns.
 func startConfigWatchers(ctx context.Context, fail context.CancelCauseFunc, opts Options, logger *slog.Logger,
 	receivers []configReceiver,
 ) (stop func(), err error) {
+	// Factories construct state only; opening watcher-owned resources in Run
+	// avoids needing a separate cleanup contract for partial construction.
 	watchers := make([]ConfigWatcher, len(receivers))
 	for i, receiver := range receivers {
 		watchers[i], err = opts.ConfigWatcherFactory(WatchOptions{
@@ -113,6 +148,8 @@ func startConfigWatchers(ctx context.Context, fail context.CancelCauseFunc, opts
 			}
 		}(watchers[i], receiver.target)
 	}
+	// Runs are already concurrent. Waiting for all receivers must not let the
+	// first successful scope make another scope appear initialized.
 	for _, initialized := range ready {
 		select {
 		case <-ctx.Done():
