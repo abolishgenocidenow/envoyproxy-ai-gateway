@@ -106,10 +106,8 @@ func ExampleMainWithOptions() {
 			query := endpoint.Query()
 			query.Set("payloadVersion", o.PayloadVersion)
 			switch o.Target {
-			case mainlib.ConfigTargetAI:
-				query.Set("scope", "llm")
-			case mainlib.ConfigTargetMCP:
-				query.Set("scope", "mcp")
+			case mainlib.ConfigTargetLLM, mainlib.ConfigTargetMCP:
+				query.Set("scope", string(o.Target))
 			default:
 				return nil, fmt.Errorf("unsupported target %q", o.Target)
 			}
@@ -218,7 +216,7 @@ func TestMainWithOptionsHTTP(t *testing.T) {
 			return
 		}
 		scope := r.URL.Query().Get("scope")
-		if scope != "ai" && scope != "mcp" {
+		if scope != "llm" && scope != "mcp" {
 			t.Errorf("unexpected scope %q", scope)
 		}
 		_, _ = fmt.Fprintf(w, "version: %s\nuuid: %s\n", r.URL.Query().Get("version"), scope)
@@ -266,7 +264,7 @@ func TestMainWithOptionsHTTP(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("extproc did not stop")
 	}
-	require.Equal(t, []mainlib.ConfigTarget{mainlib.ConfigTargetAI, mainlib.ConfigTargetMCP}, targets)
+	require.Equal(t, []mainlib.ConfigTarget{mainlib.ConfigTargetLLM, mainlib.ConfigTargetMCP}, targets)
 }
 
 type exampleWatcherFunc func(context.Context, mainlib.ApplyConfig) error
@@ -314,7 +312,7 @@ func TestMainWithOptionsWatcherFailure(t *testing.T) {
 			close(fail)
 			select {
 			case err := <-done:
-				require.ErrorContains(t, err, "ai configuration watcher stopped")
+				require.ErrorContains(t, err, "llm configuration watcher stopped")
 				if tc.err != nil {
 					require.ErrorIs(t, err, tc.err)
 				}

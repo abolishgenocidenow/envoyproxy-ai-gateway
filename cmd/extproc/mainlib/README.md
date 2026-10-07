@@ -7,14 +7,14 @@ or network protocol is required by mainlib.
 
 The factory receives `WatchOptions` once for each enabled consumer:
 
-| Target            | Consumer                               |
-| ----------------- | -------------------------------------- |
-| `ConfigTargetAI`  | AI external processor (always enabled) |
-| `ConfigTargetMCP` | MCP proxy (when `--mcpAddr` is set)    |
+| Target            | Consumer                                |
+| ----------------- | --------------------------------------- |
+| `ConfigTargetLLM` | LLM external processor (always enabled) |
+| `ConfigTargetMCP` | MCP proxy (when `--mcpAddr` is set)     |
 
 These targets let a source query and watch the corresponding configuration
 scope. They do not change which servers are enabled. Keep independent checkpoints
-for each consumer, even if both fetch the same document. A successful AI apply
+for each consumer, even if both fetch the same document. A successful LLM apply
 does not acknowledge an MCP apply.
 
 Implement `ConfigWatcher.Run(ctx, apply)` to fetch the initial document and then

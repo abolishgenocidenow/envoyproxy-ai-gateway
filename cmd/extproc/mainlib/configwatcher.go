@@ -22,8 +22,8 @@ import (
 type ConfigTarget string
 
 const (
-	// ConfigTargetAI selects the AI external processor.
-	ConfigTargetAI ConfigTarget = "ai"
+	// ConfigTargetLLM selects the LLM external processor.
+	ConfigTargetLLM ConfigTarget = "llm"
 	// ConfigTargetMCP selects the MCP proxy, when enabled.
 	ConfigTargetMCP ConfigTarget = "mcp"
 )

@@ -140,18 +140,18 @@ func TestConfigApplierSerializesReceiver(t *testing.T) {
 func TestConfigWatchersIndependentInitialization(t *testing.T) {
 	ctx, cancel := context.WithCancelCause(t.Context())
 	defer cancel(nil)
-	aiApplied, mcpRejected := make(chan struct{}), make(chan struct{})
+	llmApplied, mcpRejected := make(chan struct{}), make(chan struct{})
 	retryMCP := make(chan struct{})
-	var aiCalls, mcpCalls atomic.Int32
+	var llmCalls, mcpCalls atomic.Int32
 	var observed []WatchOptions
 	opts := Options{MaxConfigBytes: 1024, ConfigWatcherFactory: func(o WatchOptions) (ConfigWatcher, error) {
 		observed = append(observed, o)
 		return watcherFunc(func(ctx context.Context, apply ApplyConfig) error {
-			if o.Target == ConfigTargetAI {
-				if err := apply(configPayload("ai")); err != nil {
+			if o.Target == ConfigTargetLLM {
+				if err := apply(configPayload("llm")); err != nil {
 					return err
 				}
-				close(aiApplied)
+				close(llmApplied)
 			} else {
 				if err := apply(configPayload("rejected")); err == nil {
 					return errors.New("expected receiver rejection")
@@ -171,7 +171,7 @@ func TestConfigWatchersIndependentInitialization(t *testing.T) {
 		}), nil
 	}}
 	receivers := []configReceiver{
-		{ConfigTargetAI, receiverFunc(func(context.Context, *filterapi.Config) error { aiCalls.Add(1); return nil })},
+		{ConfigTargetLLM, receiverFunc(func(context.Context, *filterapi.Config) error { llmCalls.Add(1); return nil })},
 		{ConfigTargetMCP, receiverFunc(func(_ context.Context, cfg *filterapi.Config) error {
 			mcpCalls.Add(1)
 			if cfg.UUID == "rejected" {
@@ -191,9 +191,9 @@ func TestConfigWatchersIndependentInitialization(t *testing.T) {
 		started <- stop
 	}()
 	select {
-	case <-aiApplied:
+	case <-llmApplied:
 	case <-time.After(5 * time.Second):
-		t.Fatal("AI not applied")
+		t.Fatal("LLM not applied")
 	}
 	select {
 	case <-mcpRejected:
@@ -217,7 +217,7 @@ func TestConfigWatchersIndependentInitialization(t *testing.T) {
 		t.Fatal("startup blocked")
 	}
 	defer stop()
-	require.EqualValues(t, 1, aiCalls.Load())
+	require.EqualValues(t, 1, llmCalls.Load())
 	require.EqualValues(t, 2, mcpCalls.Load())
 	require.Len(t, observed, 2)
 	for _, o := range observed {
@@ -238,8 +238,8 @@ func TestConfigWatchersTermination(t *testing.T) {
 			defer cancel(nil)
 			_, err := startConfigWatchers(ctx, cancel, Options{MaxConfigBytes: 1024, ConfigWatcherFactory: func(WatchOptions) (ConfigWatcher, error) {
 				return watcherFunc(func(context.Context, ApplyConfig) error { return tc.runErr }), nil
-			}}, slog.Default(), []configReceiver{{ConfigTargetAI, receiverFunc(func(context.Context, *filterapi.Config) error { return nil })}})
-			require.ErrorContains(t, err, "ai configuration watcher stopped")
+			}}, slog.Default(), []configReceiver{{ConfigTargetLLM, receiverFunc(func(context.Context, *filterapi.Config) error { return nil })}})
+			require.ErrorContains(t, err, "llm configuration watcher stopped")
 			if tc.runErr != nil {
 				require.ErrorIs(t, err, tc.runErr)
 			}
@@ -257,7 +257,7 @@ func TestConfigWatchersFactoryFailure(t *testing.T) {
 				return nil, factoryErr
 			}
 			return watcherFunc(func(context.Context, ApplyConfig) error { started = true; return nil }), nil
-		}}, slog.Default(), []configReceiver{{target: ConfigTargetAI}, {target: ConfigTargetMCP}})
+		}}, slog.Default(), []configReceiver{{target: ConfigTargetLLM}, {target: ConfigTargetMCP}})
 		require.Error(t, err)
 		require.False(t, started, "do not start watchers until every factory succeeds")
 	}
@@ -276,7 +276,7 @@ func TestConfigWatchersCancelBeforeInitialConfig(t *testing.T) {
 				close(exited)
 				return nil
 			}), nil
-		}}, slog.Default(), []configReceiver{{target: ConfigTargetAI}})
+		}}, slog.Default(), []configReceiver{{target: ConfigTargetLLM}})
 		result <- err
 	}()
 	<-entered

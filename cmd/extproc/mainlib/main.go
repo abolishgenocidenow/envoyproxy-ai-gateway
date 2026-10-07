@@ -402,7 +402,7 @@ func MainWithOptions(ctx context.Context, args []string, stderr io.Writer, opts 
 		countTokensMetricsFactory, tracing.CountTokensTracer(), endpointspec.MessagesCountTokensEndpointSpec{}))
 
 	// Create and register gRPC server with ExternalProcessorServer (the service Envoy calls).
-	receivers := []configReceiver{{target: ConfigTargetAI, receiver: server}}
+	receivers := []configReceiver{{target: ConfigTargetLLM, receiver: server}}
 	if opts.ConfigWatcherFactory == nil {
 		if err = filterapi.StartConfigBundleWatcher(ctx, flags.configBundlePath, server, l, time.Second*5); err != nil {
 			return fmt.Errorf("failed to start config watcher: %w", err)
