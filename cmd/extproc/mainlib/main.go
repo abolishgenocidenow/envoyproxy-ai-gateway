@@ -91,6 +91,10 @@ func setOptionalString(dst **string) func(string) error {
 
 // parseAndValidateFlags parses and validates the flags passed to the external processor.
 func parseAndValidateFlags(args []string) (extProcFlags, error) {
+	return parseAndValidateFlagsWithOptions(args, Options{})
+}
+
+func parseAndValidateFlagsWithOptions(args []string, opts Options) (extProcFlags, error) {
 	var (
 		flags extProcFlags
 		errs  []error
@@ -167,8 +171,17 @@ func parseAndValidateFlags(args []string) (extProcFlags, error) {
 		return extProcFlags{}, fmt.Errorf("failed to parse extProcFlags: %w", err)
 	}
 
-	if flags.configBundlePath == "" {
-		errs = append(errs, fmt.Errorf("configBundlePath must be provided"))
+	if opts.ConfigWatcherFactory == nil {
+		if flags.configBundlePath == "" {
+			errs = append(errs, fmt.Errorf("configBundlePath must be provided"))
+		}
+	} else {
+		if flags.configBundlePath != "" {
+			errs = append(errs, fmt.Errorf("configBundlePath cannot be combined with a custom configuration watcher"))
+		}
+		if opts.MaxConfigBytes <= 0 {
+			errs = append(errs, fmt.Errorf("MaxConfigBytes must be positive for a custom configuration watcher"))
+		}
 	}
 	if err := flags.logLevel.UnmarshalText([]byte(*logLevelPtr)); err != nil {
 		errs = append(errs, fmt.Errorf("failed to unmarshal log level: %w", err))
@@ -214,14 +227,27 @@ func parseAndValidateFlags(args []string) (extProcFlags, error) {
 //
 // This returns an error if the external processor fails to start, or nil otherwise. When the `ctx` is canceled,
 // the function will return nil.
-func Main(ctx context.Context, args []string, stderr io.Writer) (err error) {
+func Main(ctx context.Context, args []string, stderr io.Writer) error {
+	return MainWithOptions(ctx, args, stderr, Options{})
+}
+
+// MainWithOptions runs extproc with optional custom configuration watchers.
+// Custom watchers must initialize every enabled consumer before traffic is
+// served. A nil factory preserves Main's bundle-watcher behavior.
+func MainWithOptions(ctx context.Context, args []string, stderr io.Writer, opts Options) (err error) {
+	ctx, cancel := context.WithCancelCause(ctx)
 	defer func() {
+		if cause := context.Cause(ctx); errors.Is(cause, errConfigWatcherStopped) {
+			err = cause
+			return
+		}
 		// Don't err the caller about normal shutdown scenarios.
 		if errors.Is(err, context.Canceled) || errors.Is(err, grpc.ErrServerStopped) {
 			err = nil
 		}
 	}()
-	flags, err := parseAndValidateFlags(args)
+	defer cancel(nil)
+	flags, err := parseAndValidateFlagsWithOptions(args, opts)
 	if err != nil {
 		return fmt.Errorf("failed to parse and validate extProcFlags: %w", err)
 	}
@@ -239,6 +265,7 @@ func Main(ctx context.Context, args []string, stderr io.Writer) (err error) {
 	if err != nil {
 		return err
 	}
+	defer extProcLis.Close()
 	if network == "unix" {
 		// Change the permission of the UDS to 0775 so that the envoy process (the same group) can access it.
 		err = os.Chmod(address, 0o775)
@@ -252,6 +279,7 @@ func Main(ctx context.Context, args []string, stderr io.Writer) (err error) {
 		return err
 	}
 
+	defer adminLis.Close()
 	var mcpLis net.Listener
 	if flags.mcpAddr != "" {
 		mcpNetwork, mcpAddress := listenAddress(flags.mcpAddr)
@@ -259,6 +287,7 @@ func Main(ctx context.Context, args []string, stderr io.Writer) (err error) {
 		if err != nil {
 			return err
 		}
+		defer mcpLis.Close()
 		if mcpNetwork == "unix" {
 			// Change the permission of the UDS to 0775 so that the envoy process (the same group) can access it.
 			err = os.Chmod(mcpAddress, 0o775)
@@ -290,6 +319,14 @@ func Main(ctx context.Context, args []string, stderr io.Writer) (err error) {
 		return err
 	}
 
+	defer func() {
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer shutdownCancel()
+		if shutdownErr := tracing.Shutdown(shutdownCtx); shutdownErr != nil {
+			l.Error("Failed to shutdown tracing gracefully", "error", shutdownErr)
+		}
+	}()
+
 	// Create Prometheus registry and reader which automatically converts
 	// attribute to Prometheus-compatible format (e.g. dots to underscores).
 	promRegistry := prometheus.NewRegistry()
@@ -303,6 +340,13 @@ func Main(ctx context.Context, args []string, stderr io.Writer) (err error) {
 	if err != nil {
 		return fmt.Errorf("failed to create metrics: %w", err)
 	}
+	defer func() {
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer shutdownCancel()
+		if shutdownErr := metricsShutdown(shutdownCtx); shutdownErr != nil {
+			l.Error("Failed to shutdown metrics gracefully", "error", shutdownErr)
+		}
+	}()
 	chatCompletionMetricsFactory := metrics.NewMetricsFactory(meter, metricsRequestHeaderAttributes, metrics.GenAIOperationChat)
 	messagesMetricsFactory := metrics.NewMetricsFactory(meter, metricsRequestHeaderAttributes, metrics.GenAIOperationMessages)
 	completionMetricsFactory := metrics.NewMetricsFactory(meter, metricsRequestHeaderAttributes, metrics.GenAIOperationCompletion)
@@ -358,8 +402,11 @@ func Main(ctx context.Context, args []string, stderr io.Writer) (err error) {
 		countTokensMetricsFactory, tracing.CountTokensTracer(), endpointspec.MessagesCountTokensEndpointSpec{}))
 
 	// Create and register gRPC server with ExternalProcessorServer (the service Envoy calls).
-	if err = filterapi.StartConfigBundleWatcher(ctx, flags.configBundlePath, server, l, time.Second*5); err != nil {
-		return fmt.Errorf("failed to start config watcher: %w", err)
+	receivers := []configReceiver{{target: ConfigTargetAI, receiver: server}}
+	if opts.ConfigWatcherFactory == nil {
+		if err = filterapi.StartConfigBundleWatcher(ctx, flags.configBundlePath, server, l, time.Second*5); err != nil {
+			return fmt.Errorf("failed to start config watcher: %w", err)
+		}
 	}
 
 	var mcpServer *http.Server
@@ -389,8 +436,11 @@ func Main(ctx context.Context, args []string, stderr io.Writer) (err error) {
 		if err != nil {
 			return fmt.Errorf("failed to create MCP proxy: %w", err)
 		}
-		if err = filterapi.StartConfigBundleWatcher(ctx, flags.configBundlePath, mcpProxyConfig, l, time.Second*5); err != nil {
-			return fmt.Errorf("failed to start config watcher: %w", err)
+		receivers = append(receivers, configReceiver{target: ConfigTargetMCP, receiver: mcpProxyConfig})
+		if opts.ConfigWatcherFactory == nil {
+			if err = filterapi.StartConfigBundleWatcher(ctx, flags.configBundlePath, mcpProxyConfig, l, time.Second*5); err != nil {
+				return fmt.Errorf("failed to start config watcher: %w", err)
+			}
 		}
 
 		mcpServer = &http.Server{
@@ -398,6 +448,17 @@ func Main(ctx context.Context, args []string, stderr io.Writer) (err error) {
 			ReadHeaderTimeout: 120 * time.Second,
 			WriteTimeout:      flags.mcpWriteTimeout,
 		}
+		defer mcpServer.Close()
+	}
+
+	if opts.ConfigWatcherFactory != nil {
+		stop, startErr := startConfigWatchers(ctx, cancel, opts, l, receivers)
+		if startErr != nil {
+			return startErr
+		}
+		defer func() { cancel(nil); stop() }()
+	}
+	if mcpServer != nil {
 		go func() {
 			l.Info("Starting mcp proxy", "addr", mcpLis.Addr())
 			if err2 := mcpServer.Serve(mcpLis); err2 != nil && !errors.Is(err2, http.ErrServerClosed) {
@@ -421,24 +482,21 @@ func Main(ctx context.Context, args []string, stderr io.Writer) (err error) {
 
 	// Start HTTP admin server for metrics and health checks.
 	adminServer := startAdminServer(adminLis, l, promRegistry, healthClient)
+	defer adminServer.Close()
 
+	shutdownDone := make(chan struct{})
+	defer func() { cancel(nil); <-shutdownDone }()
 	go func() {
+		defer close(shutdownDone)
 		<-ctx.Done()
-		s.GracefulStop()
-
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
+		stopGRPCServer(shutdownCtx, s)
 		if err := healthCheckConn.Close(); err != nil {
 			l.Error("Failed to close health check client", "error", err)
 		}
 		if err := adminServer.Shutdown(shutdownCtx); err != nil {
 			l.Error("Failed to shutdown admin server gracefully", "error", err)
-		}
-		if err := tracing.Shutdown(shutdownCtx); err != nil {
-			l.Error("Failed to shutdown tracing gracefully", "error", err)
-		}
-		if err := metricsShutdown(shutdownCtx); err != nil {
-			l.Error("Failed to shutdown metrics gracefully", "error", err)
 		}
 		if mcpServer != nil {
 			if err := mcpServer.Shutdown(shutdownCtx); err != nil {
@@ -453,6 +511,13 @@ func Main(ctx context.Context, args []string, stderr io.Writer) (err error) {
 	// it would be extremely hard to debug issues where the external processor fails to start.
 	fmt.Fprintf(stderr, "AI Gateway External Processor is ready\n")
 	return s.Serve(extProcLis)
+}
+
+// stopGRPCServer bounds draining so a long-lived stream cannot block shutdown.
+func stopGRPCServer(ctx context.Context, s *grpc.Server) {
+	stop := context.AfterFunc(ctx, s.Stop)
+	defer stop()
+	s.GracefulStop()
 }
 
 func listen(ctx context.Context, name, network, address string) (net.Listener, error) {
