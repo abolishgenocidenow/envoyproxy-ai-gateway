@@ -57,12 +57,22 @@ watcher's handling of omitted sections is preserved.
   watchers before starting any of them. Applied credential handlers receive the
   process context, never an individual fetch's deadline.
 
-[The HTTP polling example](configwatcher_example_test.go) compiles as an external
-package using only the public API. It makes an initial GET, polls with a
-per-consumer ETag, bounds response bytes, and advances the ETag only after a
-successful apply. Its `scope` and `payloadVersion` query parameters are an
-example endpoint contract, not a protocol imposed by mainlib. A downstream
-factory can capture gateway identity and other source-specific options.
+To connect these pieces, a downstream application supplies a factory that
+combines its source configuration with the consumer's `WatchOptions` and returns
+a watcher. The watcher fetches documents and passes them to `apply`, following
+the lifecycle and acknowledgement rules above.
+
+[The HTTP polling example](configwatcher_example_test.go) shows this flow using
+an application-provided HTTP client. It fetches an initial document, then polls
+for updates with a per-consumer ETag. Response reads are bounded, and the ETag
+advances only after a successful apply. The example compiles as an external
+package using only the public API.
+
+The example endpoint accepts `scope` and `payloadVersion` query parameters to
+select a document. A downstream adapter defines its own endpoint contract;
+its factory can also capture gateway identity and other source-specific options.
+The following section explains how connection settings and client ownership
+fit into that factory.
 
 ## Connection configuration and client injection
 
