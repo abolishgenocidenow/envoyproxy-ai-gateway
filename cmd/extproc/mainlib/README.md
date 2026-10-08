@@ -66,8 +66,9 @@ factory can capture gateway identity and other source-specific options.
 
 Connection setup belongs to the downstream application and its transport
 adapter. Inject a configured client into the adapter through the factory
-closure; mainlib only receives the resulting `ConfigWatcher`. This avoids a
-protocol-specific client field or TLS/authentication flags in mainlib.
+closure; mainlib only receives the resulting `ConfigWatcher`. For example, an
+HTTP adapter can capture an `*http.Client` configured by the application with
+HTTPS, mTLS, and authentication.
 
 | Owner       | Responsibilities                                                                                                              |
 | ----------- | ----------------------------------------------------------------------------------------------------------------------------- |
