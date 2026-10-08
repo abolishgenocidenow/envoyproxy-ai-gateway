@@ -29,6 +29,7 @@ import (
 
 	"github.com/envoyproxy/ai-gateway/internal/endpointspec"
 	"github.com/envoyproxy/ai-gateway/internal/extproc"
+	"github.com/envoyproxy/ai-gateway/internal/filterapi"
 	"github.com/envoyproxy/ai-gateway/internal/internalapi"
 	"github.com/envoyproxy/ai-gateway/internal/mcpproxy"
 	"github.com/envoyproxy/ai-gateway/internal/metrics"
@@ -440,7 +441,9 @@ func MainWithOptions(ctx context.Context, args []string, stderr io.Writer, opts 
 		if err != nil {
 			return fmt.Errorf("failed to create MCP proxy: %w", err)
 		}
-		receivers = append(receivers, configReceiver{target: ConfigTargetMCP, receiver: mcpProxyConfig})
+		receivers = append(receivers, configReceiver{
+			target: ConfigTargetMCP, receiver: mcpProxyConfig, validate: validateMCPConfig,
+		})
 
 		mcpServer = &http.Server{
 			Handler:           mcpProxyMux,
@@ -511,6 +514,16 @@ func MainWithOptions(ctx context.Context, args []string, stderr io.Writer, opts 
 	// it would be extremely hard to debug issues where the external processor fails to start.
 	fmt.Fprintf(stderr, "AI Gateway External Processor is ready\n")
 	return s.Serve(extProcLis)
+}
+
+// validateMCPConfig prevents a scoped update from acknowledging the MCP loader's
+// absent-section no-op, including falsely satisfying initial readiness. An empty
+// mcpConfig object is a valid replacement that clears the current configuration.
+func validateMCPConfig(cfg *filterapi.Config) error {
+	if cfg.MCPConfig == nil {
+		return errors.New("mcp configuration must include mcpConfig")
+	}
+	return nil
 }
 
 func listen(ctx context.Context, name, network, address string) (net.Listener, error) {

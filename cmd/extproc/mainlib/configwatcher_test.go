@@ -84,7 +84,7 @@ func TestConfigApplier(t *testing.T) {
 	var current string
 	var savedCtx context.Context
 	rejected := errors.New("receiver rejected candidate")
-	apply := configApplier(watchCtx, runtimeCtx, 128, configReceiver{ConfigTargetLLM, receiverFunc(func(ctx context.Context, cfg *filterapi.Config) error {
+	apply := configApplier(watchCtx, runtimeCtx, 128, configReceiver{target: ConfigTargetLLM, receiver: receiverFunc(func(ctx context.Context, cfg *filterapi.Config) error {
 		calls++
 		if cfg.UUID == "rejected" {
 			return rejected
@@ -119,7 +119,7 @@ func TestConfigApplier(t *testing.T) {
 
 func TestConfigApplierSerializesReceiver(t *testing.T) {
 	var active, calls atomic.Int32
-	apply := configApplier(t.Context(), t.Context(), 1024, configReceiver{ConfigTargetLLM, receiverFunc(func(context.Context, *filterapi.Config) error {
+	apply := configApplier(t.Context(), t.Context(), 1024, configReceiver{target: ConfigTargetLLM, receiver: receiverFunc(func(context.Context, *filterapi.Config) error {
 		if active.Add(1) != 1 {
 			return errors.New("concurrent receiver application")
 		}
@@ -141,13 +141,47 @@ func TestConfigApplierSerializesReceiver(t *testing.T) {
 	require.EqualValues(t, 20, calls.Load())
 }
 
+func TestConfigApplierConsumerValidation(t *testing.T) {
+	initialized := make(chan struct{})
+	rejected := errors.New("consumer rejected snapshot")
+	var loaded string
+	apply := configApplier(t.Context(), t.Context(), 1024, configReceiver{
+		target: ConfigTarget("additional-consumer"),
+		validate: func(cfg *filterapi.Config) error {
+			if cfg.UUID != "accepted" {
+				return rejected
+			}
+			return nil
+		},
+		receiver: receiverFunc(func(_ context.Context, cfg *filterapi.Config) error {
+			loaded = cfg.UUID
+			return nil
+		}),
+	}, initialized)
+	require.ErrorIs(t, apply(configPayload("rejected")), rejected)
+	require.Empty(t, loaded, "validation must precede the loader")
+	select {
+	case <-initialized:
+		t.Fatal("validation failure satisfied startup readiness")
+	default:
+	}
+	require.NoError(t, apply(configPayload("accepted")))
+	select {
+	case <-initialized:
+	default:
+		t.Fatal("accepted configuration did not satisfy startup readiness")
+	}
+	require.ErrorIs(t, apply(configPayload("rejected-again")), rejected)
+	require.Equal(t, "accepted", loaded, "rejection must preserve the accepted configuration")
+}
+
 func TestConfigApplierMCPRequiresConfiguration(t *testing.T) {
 	initialized := make(chan struct{})
 	var calls int
 	var current *filterapi.MCPConfig
 	apply := configApplier(t.Context(), t.Context(), 1024, configReceiver{
-		ConfigTargetMCP,
-		receiverFunc(func(_ context.Context, cfg *filterapi.Config) error {
+		target: ConfigTargetMCP, validate: validateMCPConfig,
+		receiver: receiverFunc(func(_ context.Context, cfg *filterapi.Config) error {
 			calls++
 			current = cfg.MCPConfig
 			return nil
@@ -191,13 +225,15 @@ func FuzzConfigApplier(f *testing.F) {
 		watchCtx, cancel := context.WithCancel(t.Context())
 		defer cancel()
 		target := ConfigTargetLLM
+		var validate func(*filterapi.Config) error
 		if mcp {
 			target = ConfigTargetMCP
+			validate = validateMCPConfig
 		}
 		initialized := make(chan struct{})
 		rejected := errors.New("receiver rejected candidate")
 		var calls int
-		apply := configApplier(watchCtx, t.Context(), 1024, configReceiver{target, receiverFunc(func(ctx context.Context, cfg *filterapi.Config) error {
+		apply := configApplier(watchCtx, t.Context(), 1024, configReceiver{target: target, validate: validate, receiver: receiverFunc(func(ctx context.Context, cfg *filterapi.Config) error {
 			calls++
 			require.NoError(t, ctx.Err())
 			require.LessOrEqual(t, len(payload), 1024, "oversized input reached the loader")
@@ -271,8 +307,8 @@ func TestConfigWatchersIndependentInitialization(t *testing.T) {
 		}), nil
 	}}
 	receivers := []configReceiver{
-		{ConfigTargetLLM, receiverFunc(func(context.Context, *filterapi.Config) error { llmCalls.Add(1); return nil })},
-		{ConfigTargetMCP, receiverFunc(func(_ context.Context, cfg *filterapi.Config) error {
+		{target: ConfigTargetLLM, receiver: receiverFunc(func(context.Context, *filterapi.Config) error { llmCalls.Add(1); return nil })},
+		{target: ConfigTargetMCP, validate: validateMCPConfig, receiver: receiverFunc(func(_ context.Context, cfg *filterapi.Config) error {
 			mcpCalls.Add(1)
 			if cfg.UUID == "rejected" {
 				return errors.New("retry")
@@ -341,7 +377,7 @@ func TestConfigWatchersTermination(t *testing.T) {
 				return watcherFunc(func(context.Context, ApplyConfig) error { return tc.runErr }), nil
 			}}
 			factory := resolveConfigSubscriptionFactory(ctx, opts, "", slog.Default())
-			_, err := startConfigWatchers(ctx, cancel, factory, []configReceiver{{ConfigTargetLLM, receiverFunc(func(context.Context, *filterapi.Config) error { return nil })}})
+			_, err := startConfigWatchers(ctx, cancel, factory, []configReceiver{{target: ConfigTargetLLM, receiver: receiverFunc(func(context.Context, *filterapi.Config) error { return nil })}})
 			require.ErrorContains(t, err, "llm configuration watcher stopped")
 			if tc.runErr != nil {
 				require.ErrorIs(t, err, tc.runErr)
@@ -446,7 +482,7 @@ func TestDefaultConfigSubscriptions(t *testing.T) {
 				}
 				var llmCalls, mcpCalls atomic.Int32
 				receivers := []configReceiver{
-					{ConfigTargetLLM, receiverFunc(func(context.Context, *filterapi.Config) error {
+					{target: ConfigTargetLLM, receiver: receiverFunc(func(context.Context, *filterapi.Config) error {
 						if tc.name == "receiver rejection" {
 							return errors.New("receiver rejected configuration")
 						}
@@ -455,7 +491,7 @@ func TestDefaultConfigSubscriptions(t *testing.T) {
 					})},
 					// File mode keeps the existing loader semantics, including an
 					// absent MCP section; custom-source validation must not run here.
-					{ConfigTargetMCP, receiverFunc(func(context.Context, *filterapi.Config) error {
+					{target: ConfigTargetMCP, validate: validateMCPConfig, receiver: receiverFunc(func(context.Context, *filterapi.Config) error {
 						mcpCalls.Add(1)
 						return nil
 					})},

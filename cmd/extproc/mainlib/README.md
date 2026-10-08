@@ -13,7 +13,9 @@ checksum-mismatch retries, while custom watchers must apply an initial document
 successfully. Other initial file errors still prevent startup. File mode reuses
 the existing bundle decoder and loaders without serializing the document again.
 
-The factory receives `WatchOptions` once for each enabled consumer:
+The factory receives `WatchOptions` once for each enabled consumer. The supervisor
+handles the registered consumers uniformly; each consumer owns its snapshot
+validation rules. The current built-in targets are:
 
 | Target            | Consumer                                |
 | ----------------- | --------------------------------------- |

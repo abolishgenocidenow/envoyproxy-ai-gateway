@@ -26,6 +26,7 @@ const (
 	// ConfigTargetLLM selects the LLM external processor.
 	ConfigTargetLLM ConfigTarget = "llm"
 	// ConfigTargetMCP selects the MCP proxy, when enabled.
+	// Custom documents must include mcpConfig; mcpConfig: {} clears its configuration.
 	ConfigTargetMCP ConfigTarget = "mcp"
 )
 
@@ -33,8 +34,8 @@ const (
 // Nil acknowledges acceptance by this receiver only. On error, the watcher
 // should retry without advancing its checkpoint. The caller must not mutate
 // payload until the call returns. Errors may contain sensitive input and must
-// not be logged without redaction. MCP documents must include mcpConfig;
-// mcpConfig: {} explicitly replaces the current MCP configuration with an empty one.
+// not be logged without redaction. Each consumer may impose additional snapshot
+// requirements before its configuration loader is called.
 type ApplyConfig func(payload []byte) error
 
 // WatchOptions describes the consumer to a configuration watcher.
@@ -77,6 +78,9 @@ var errConfigWatcherStopped = errors.New("configuration watcher stopped")
 type configReceiver struct {
 	target   ConfigTarget
 	receiver filterapi.ConfigReceiver
+	// validate checks scoped snapshots from custom sources before loading them.
+	// File subscriptions retain their existing loader semantics.
+	validate func(*filterapi.Config) error
 }
 
 // configSubscription signals initialized according to its source's startup
@@ -116,17 +120,18 @@ func resolveConfigSubscriptionFactory(runtimeCtx context.Context, opts Options, 
 }
 
 // startConfigWatchers starts and supervises scoped subscriptions supplied by the
-// resolved factory. The plural refers to consumers: MainWithOptions supplies one
-// LLM receiver and, when enabled, one MCP receiver. This function does not merge
-// configuration sources or consolidate transport connections. Watchers may share
+// resolved factory. MainWithOptions registers its enabled configuration consumers;
+// this helper manages one subscription per registration, independently of the
+// consumer's identity or whether it is optional. It does not merge configuration
+// sources or consolidate transport connections. Watchers may share
 // an application-owned client, but this helper does not deduplicate their reads.
 // File and custom subscriptions share this startup and shutdown path.
 //
-// Each receiver gets its own subscription because acceptance is
-// independent: an LLM apply must not acknowledge an MCP update that failed.
+// Each receiver gets its own subscription because acceptance is independent:
+// accepting an update for one consumer must not acknowledge another's update.
 // Checkpoints and retries belong to the watcher. The custom callback serializes
-// applies to its receiver, decodes and version-checks documents, checks for MCP
-// configuration when that scope is requested, and reports the existing loader's
+// applies to its receiver, decodes and version-checks documents, invokes any
+// validation registered by that consumer, and reports the existing loader's
 // result. It neither orders source revisions nor makes updates across consumers
 // atomic; watchers must deliver replacements in source order.
 //
@@ -173,17 +178,16 @@ func startConfigWatchers(ctx context.Context, fail context.CancelCauseFunc, fact
 	for i, receiver := range receivers {
 		initialized := make(chan struct{})
 		ready[i] = initialized
-		wg.Add(1)
-		go func(watcher configSubscription, target ConfigTarget) {
-			defer wg.Done()
+		watcher := watchers[i]
+		wg.Go(func() {
 			runErr := watcher(watchCtx, initialized)
 			if watchCtx.Err() == nil {
 				if runErr == nil {
 					runErr = errors.New("watcher returned before cancellation")
 				}
-				fail(fmt.Errorf("%s %w: %w", target, errConfigWatcherStopped, runErr))
+				fail(fmt.Errorf("%s %w: %w", receiver.target, errConfigWatcherStopped, runErr))
 			}
-		}(watchers[i], receiver.target)
+		})
 	}
 	// Runs are already concurrent. Waiting for all receivers must not let the
 	// first successful scope make another scope appear initialized.
@@ -223,11 +227,10 @@ func configApplier(watchCtx, runtimeCtx context.Context, maxBytes int64, receive
 		if cfg.Version != version.Parse() {
 			return fmt.Errorf("config version mismatch: expected %q, got %q", version.Parse(), cfg.Version)
 		}
-		// The MCP loader treats an absent section as a successful no-op. For a
-		// scoped subscription that would acknowledge an update without installing
-		// it, including falsely satisfying the initial configuration gate.
-		if receiver.target == ConfigTargetMCP && cfg.MCPConfig == nil {
-			return errors.New("mcp configuration must include mcpConfig")
+		if receiver.validate != nil {
+			if err := receiver.validate(&cfg); err != nil {
+				return fmt.Errorf("validate configuration: %w", err)
+			}
 		}
 		// Runtime credential handlers may retain this context. A fetch deadline must
 		// not cancel state that was successfully installed for subsequent requests.
