@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc"
 
 	"github.com/envoyproxy/ai-gateway/cmd/extproc/mainlib"
 )
@@ -214,6 +215,9 @@ func TestMainWithOptionsHTTP(t *testing.T) {
 	defer cancel()
 	var unavailable atomic.Bool
 	unavailable.Store(true)
+	var mcpReady atomic.Bool
+	var missingMCPRequests atomic.Int32
+	mcpRetried := make(chan struct{})
 	fetched := make(chan struct{})
 	var first sync.Once
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -226,8 +230,23 @@ func TestMainWithOptionsHTTP(t *testing.T) {
 		if scope != "llm" && scope != "mcp" {
 			t.Errorf("unexpected scope %q", scope)
 		}
+		missingMCP := scope == "mcp" && !mcpReady.Load()
+		if missingMCP {
+			w.Header().Set("ETag", `"mcp-pending"`)
+		}
 		_, _ = fmt.Fprintf(w, "version: %s\nuuid: %s\n", r.URL.Query().Get("version"), scope)
 		if scope == "mcp" {
+			if missingMCP {
+				if r.Header.Get("If-None-Match") != "" {
+					t.Error("missing MCP section advanced the subscription checkpoint")
+				}
+				// A second fetch proves the first apply returned before we check
+				// the startup gate and that rejection did not advance the ETag.
+				if missingMCPRequests.Add(1) == 2 {
+					close(mcpRetried)
+				}
+				return
+			}
 			_, _ = io.WriteString(w, "mcpConfig: {}\n")
 		}
 	}))
@@ -258,6 +277,19 @@ func TestMainWithOptionsHTTP(t *testing.T) {
 	}
 	unavailable.Store(false)
 	select {
+	case <-mcpRetried:
+	case err := <-done:
+		t.Fatal(err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("missing MCP configuration was not retried")
+	}
+	select {
+	case <-output.ready:
+		t.Fatal("served before MCP installed its initial configuration")
+	default:
+	}
+	mcpReady.Store(true)
+	select {
 	case <-output.ready:
 	case err := <-done:
 		t.Fatal(err)
@@ -272,6 +304,40 @@ func TestMainWithOptionsHTTP(t *testing.T) {
 		t.Fatal("extproc did not stop")
 	}
 	require.Equal(t, []mainlib.ConfigTarget{mainlib.ConfigTargetLLM, mainlib.ConfigTargetMCP}, targets)
+}
+
+func TestMainWithOptionsFactoryErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		err      error
+		shutdown bool
+	}{
+		{"canceled while caller is live", context.Canceled, false},
+		{"wrapped cancellation while caller is live", fmt.Errorf("client initialization: %w", context.Canceled), false},
+		{"server stopped while caller is live", grpc.ErrServerStopped, false},
+		{"caller shutdown", context.Canceled, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			err := mainlib.MainWithOptions(ctx, []string{"--extProcAddr", ":0", "--adminPort", "0"}, io.Discard, mainlib.Options{
+				MaxConfigBytes: 1024,
+				ConfigWatcherFactory: func(mainlib.WatchOptions) (mainlib.ConfigWatcher, error) {
+					if tc.shutdown {
+						cancel()
+					}
+					return nil, tc.err
+				},
+			})
+			if tc.shutdown {
+				require.NoError(t, err)
+			} else {
+				require.NoError(t, ctx.Err(), "caller must remain live")
+				require.ErrorIs(t, err, tc.err)
+				require.ErrorContains(t, err, "create llm configuration watcher")
+			}
+		})
+	}
 }
 
 type exampleWatcherFunc func(context.Context, mainlib.ApplyConfig) error

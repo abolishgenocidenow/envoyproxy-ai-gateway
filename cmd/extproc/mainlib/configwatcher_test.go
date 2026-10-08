@@ -11,19 +11,18 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	extprocv3 "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/health"
-	"google.golang.org/grpc/health/grpc_health_v1"
-	"google.golang.org/grpc/test/bufconn"
 
 	"github.com/envoyproxy/ai-gateway/internal/filterapi"
 	"github.com/envoyproxy/ai-gateway/internal/version"
@@ -41,6 +40,10 @@ func (f receiverFunc) LoadConfig(ctx context.Context, cfg *filterapi.Config) err
 
 func configPayload(uuid string) []byte {
 	return []byte(fmt.Sprintf("version: %s\nuuid: %s\n", version.Parse(), uuid))
+}
+
+func mcpPayload(uuid string) []byte {
+	return append(configPayload(uuid), []byte("mcpConfig: {}\n")...)
 }
 
 func TestConfigWatcherOptions(t *testing.T) {
@@ -80,14 +83,14 @@ func TestConfigApplier(t *testing.T) {
 	var current string
 	var savedCtx context.Context
 	rejected := errors.New("receiver rejected candidate")
-	apply := configApplier(watchCtx, runtimeCtx, 128, receiverFunc(func(ctx context.Context, cfg *filterapi.Config) error {
+	apply := configApplier(watchCtx, runtimeCtx, 128, configReceiver{ConfigTargetLLM, receiverFunc(func(ctx context.Context, cfg *filterapi.Config) error {
 		calls++
 		if cfg.UUID == "rejected" {
 			return rejected
 		}
 		current, savedCtx = cfg.UUID, ctx
 		return nil
-	}), initialized)
+	})}, initialized)
 	for _, payload := range [][]byte{[]byte(strings.Repeat("x", 129)), []byte("[broken"), []byte("version: incompatible"), nil} {
 		require.Error(t, apply(payload))
 	}
@@ -115,14 +118,14 @@ func TestConfigApplier(t *testing.T) {
 
 func TestConfigApplierSerializesReceiver(t *testing.T) {
 	var active, calls atomic.Int32
-	apply := configApplier(t.Context(), t.Context(), 1024, receiverFunc(func(context.Context, *filterapi.Config) error {
+	apply := configApplier(t.Context(), t.Context(), 1024, configReceiver{ConfigTargetLLM, receiverFunc(func(context.Context, *filterapi.Config) error {
 		if active.Add(1) != 1 {
 			return errors.New("concurrent receiver application")
 		}
 		defer active.Add(-1)
 		calls.Add(1)
 		return nil
-	}), make(chan struct{}))
+	})}, make(chan struct{}))
 	var wg sync.WaitGroup
 	errs := make(chan error, 20)
 	for range 20 {
@@ -135,6 +138,102 @@ func TestConfigApplierSerializesReceiver(t *testing.T) {
 		require.NoError(t, err)
 	}
 	require.EqualValues(t, 20, calls.Load())
+}
+
+func TestConfigApplierMCPRequiresConfiguration(t *testing.T) {
+	initialized := make(chan struct{})
+	var calls int
+	var current *filterapi.MCPConfig
+	apply := configApplier(t.Context(), t.Context(), 1024, configReceiver{
+		ConfigTargetMCP,
+		receiverFunc(func(_ context.Context, cfg *filterapi.Config) error {
+			calls++
+			current = cfg.MCPConfig
+			return nil
+		}),
+	}, initialized)
+	for _, payload := range [][]byte{configPayload("missing"), append(configPayload("null"), []byte("mcpConfig: null\n")...)} {
+		require.ErrorContains(t, apply(payload), "must include mcpConfig")
+	}
+	require.Zero(t, calls)
+	select {
+	case <-initialized:
+		t.Fatal("missing MCP section satisfied initial configuration gate")
+	default:
+	}
+	// An explicit empty section is a real replacement, including for revocation.
+	require.NoError(t, apply(mcpPayload("empty")))
+	<-initialized
+	require.NotNil(t, current)
+	accepted := current
+	require.ErrorContains(t, apply(configPayload("missing-again")), "must include mcpConfig")
+	require.Equal(t, 1, calls, "rejection must not reach the loader or acknowledge an update")
+	require.Same(t, accepted, current)
+}
+
+func FuzzConfigApplier(f *testing.F) {
+	for _, payload := range [][]byte{
+		nil, []byte("[broken"), []byte("null"), []byte("version: incompatible\n"),
+		configPayload("llm"), mcpPayload("mcp"),
+		append(configPayload("null-mcp"), []byte("mcpConfig: null\n")...),
+		[]byte(fmt.Sprintf(`{"version":%q,"mcpConfig":{}}`, version.Parse())),
+		append(mcpPayload("at-limit"), []byte(strings.Repeat(" ", 1024-len(mcpPayload("at-limit"))))...),
+		[]byte(strings.Repeat("x", 1025)),
+	} {
+		for _, mcp := range []bool{false, true} {
+			for _, reject := range []bool{false, true} {
+				f.Add(payload, mcp, reject)
+			}
+		}
+	}
+	f.Fuzz(func(t *testing.T, payload []byte, mcp, reject bool) {
+		watchCtx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		target := ConfigTargetLLM
+		if mcp {
+			target = ConfigTargetMCP
+		}
+		initialized := make(chan struct{})
+		rejected := errors.New("receiver rejected candidate")
+		var calls int
+		apply := configApplier(watchCtx, t.Context(), 1024, configReceiver{target, receiverFunc(func(ctx context.Context, cfg *filterapi.Config) error {
+			calls++
+			require.NoError(t, ctx.Err())
+			require.LessOrEqual(t, len(payload), 1024, "oversized input reached the loader")
+			require.Equal(t, version.Parse(), cfg.Version, "incompatible input reached the loader")
+			if mcp {
+				require.NotNil(t, cfg.MCPConfig, "missing MCP section reached the loader")
+			}
+			if reject {
+				return rejected
+			}
+			return nil
+		})}, initialized)
+		// Repeated delivery must neither acknowledge rejection nor close the
+		// initialization channel twice after a successful apply.
+		for range 2 {
+			before := calls
+			err := apply(payload)
+			switch {
+			case calls == before:
+				require.Error(t, err, "acknowledged input without calling the loader")
+			case reject:
+				require.ErrorIs(t, err, rejected)
+			default:
+				require.NoError(t, err)
+			}
+			select {
+			case <-initialized:
+				require.NoError(t, err, "rejected input satisfied startup readiness")
+			default:
+				require.Error(t, err, "accepted input did not satisfy startup readiness")
+			}
+		}
+		cancel()
+		before := calls
+		require.ErrorIs(t, apply(payload), context.Canceled)
+		require.Equal(t, before, calls, "canceled subscription called the loader")
+	})
 }
 
 func TestConfigWatchersIndependentInitialization(t *testing.T) {
@@ -153,7 +252,7 @@ func TestConfigWatchersIndependentInitialization(t *testing.T) {
 				}
 				close(llmApplied)
 			} else {
-				if err := apply(configPayload("rejected")); err == nil {
+				if err := apply(mcpPayload("rejected")); err == nil {
 					return errors.New("expected receiver rejection")
 				}
 				close(mcpRejected)
@@ -162,7 +261,7 @@ func TestConfigWatchersIndependentInitialization(t *testing.T) {
 					return nil
 				case <-retryMCP:
 				}
-				if err := apply(configPayload("mcp")); err != nil {
+				if err := apply(mcpPayload("mcp")); err != nil {
 					return err
 				}
 			}
@@ -294,34 +393,74 @@ func TestConfigWatchersCancelBeforeInitialConfig(t *testing.T) {
 	}
 }
 
-func TestConfigWatcherShutdownWithActiveStream(t *testing.T) {
-	listener := bufconn.Listen(1024 * 1024)
-	defer listener.Close()
-	server := grpc.NewServer()
-	defer server.Stop()
-	grpc_health_v1.RegisterHealthServer(server, health.NewServer())
-	served := make(chan error, 1)
-	go func() { served <- server.Serve(listener) }()
-	conn, err := grpc.NewClient("passthrough:///test",
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return listener.Dial() }))
+type writerFunc func([]byte) (int, error)
+
+func (f writerFunc) Write(p []byte) (int, error) { return f(p) }
+
+func TestMainDrainsActiveStream(t *testing.T) {
+	// Use a short directory to stay within Unix socket path limits on macOS.
+	socketDir, err := os.MkdirTemp("/tmp", "watcher-drain-")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, os.RemoveAll(socketDir)) })
+	endpoint := "unix://" + filepath.Join(socketDir, "extproc.sock")
+	bundlePath := t.TempDir()
+	payload := configPayload("drain")
+	part := filterapi.ConfigBundlePart{Name: "config", Path: filterapi.ConfigBundlePartPath(0), SizeBytes: len(payload)}
+	partPath := filepath.Join(bundlePath, part.Path)
+	require.NoError(t, os.MkdirAll(filepath.Dir(partPath), 0o700))
+	require.NoError(t, os.WriteFile(partPath, payload, 0o600))
+	index, err := filterapi.MarshalConfigBundleIndex(&filterapi.ConfigBundleIndex{
+		Checksum: filterapi.ConfigBundleChecksum(payload), Parts: []filterapi.ConfigBundlePart{part},
+	})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(bundlePath, filterapi.ConfigBundleIndexFileName), index, 0o600))
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	ready := make(chan struct{})
+	var once sync.Once
+	done := make(chan error, 1)
+	go func() {
+		done <- Main(ctx, []string{"--configBundlePath", bundlePath, "--extProcAddr", endpoint, "--adminPort", "0"},
+			writerFunc(func(p []byte) (int, error) {
+				if strings.Contains(string(p), "AI Gateway External Processor is ready") {
+					once.Do(func() { close(ready) })
+				}
+				return len(p), nil
+			}))
+	}()
+	select {
+	case <-ready:
+	case mainErr := <-done:
+		t.Fatalf("startup failed: %v", mainErr)
+	case <-time.After(5 * time.Second):
+		t.Fatal("extproc did not initialize")
+	}
+	conn, err := grpc.NewClient(endpoint, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	require.NoError(t, err)
 	defer conn.Close()
-	stream, err := grpc_health_v1.NewHealthClient(conn).Watch(t.Context(), &grpc_health_v1.HealthCheckRequest{})
+	streamCtx, cancelStream := context.WithCancel(t.Context())
+	defer cancelStream()
+	stream, err := extprocv3.NewExternalProcessorClient(conn).Process(streamCtx)
 	require.NoError(t, err)
+	request := &extprocv3.ProcessingRequest{Request: &extprocv3.ProcessingRequest_RequestBody{RequestBody: &extprocv3.HttpBody{Body: []byte("probe")}}}
+	require.NoError(t, stream.Send(request))
 	_, err = stream.Recv()
 	require.NoError(t, err, "stream must be active before shutdown")
-	shutdownCtx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-	stopped := make(chan struct{})
-	go func() { stopGRPCServer(shutdownCtx, server); close(stopped) }()
 	cancel()
+	// Exceed the removed five-second deadline, then verify the RPC still works.
 	select {
-	case <-stopped:
-	case <-time.After(5 * time.Second):
-		t.Fatal("active stream blocked shutdown")
+	case mainErr := <-done:
+		t.Fatalf("Main returned before the active stream drained: %v", mainErr)
+	case <-time.After(5200 * time.Millisecond):
 	}
+	require.NoError(t, stream.Send(request))
 	_, err = stream.Recv()
-	require.Error(t, err)
-	require.NoError(t, <-served)
+	require.NoError(t, err, "shutdown must not force-close an active stream")
+	cancelStream()
+	select {
+	case mainErr := <-done:
+		require.NoError(t, mainErr)
+	case <-time.After(5 * time.Second):
+		t.Fatal("Main did not return after the stream drained")
+	}
 }

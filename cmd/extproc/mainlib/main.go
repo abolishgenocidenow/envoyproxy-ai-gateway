@@ -235,6 +235,7 @@ func Main(ctx context.Context, args []string, stderr io.Writer) error {
 // Custom watchers must initialize every enabled consumer before traffic is
 // served. A nil factory preserves Main's bundle-watcher behavior.
 func MainWithOptions(ctx context.Context, args []string, stderr io.Writer, opts Options) (err error) {
+	callerCtx := ctx
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer func() {
 		if cause := context.Cause(ctx); errors.Is(cause, errConfigWatcherStopped) {
@@ -242,7 +243,7 @@ func MainWithOptions(ctx context.Context, args []string, stderr io.Writer, opts 
 			return
 		}
 		// Don't err the caller about normal shutdown scenarios.
-		if errors.Is(err, context.Canceled) || errors.Is(err, grpc.ErrServerStopped) {
+		if callerCtx.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, grpc.ErrServerStopped)) {
 			err = nil
 		}
 	}()
@@ -489,9 +490,11 @@ func MainWithOptions(ctx context.Context, args []string, stderr io.Writer, opts 
 	go func() {
 		defer close(shutdownDone)
 		<-ctx.Done()
+		// Preserve the existing drain policy: active RPCs finish before the
+		// cleanup timeout starts. A configuration transport must not shorten it.
+		s.GracefulStop()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		stopGRPCServer(shutdownCtx, s)
 		if err := healthCheckConn.Close(); err != nil {
 			l.Error("Failed to close health check client", "error", err)
 		}
@@ -511,13 +514,6 @@ func MainWithOptions(ctx context.Context, args []string, stderr io.Writer, opts 
 	// it would be extremely hard to debug issues where the external processor fails to start.
 	fmt.Fprintf(stderr, "AI Gateway External Processor is ready\n")
 	return s.Serve(extProcLis)
-}
-
-// stopGRPCServer bounds draining so a long-lived stream cannot block shutdown.
-func stopGRPCServer(ctx context.Context, s *grpc.Server) {
-	stop := context.AfterFunc(ctx, s.Stop)
-	defer stop()
-	s.GracefulStop()
 }
 
 func listen(ctx context.Context, name, network, address string) (net.Listener, error) {

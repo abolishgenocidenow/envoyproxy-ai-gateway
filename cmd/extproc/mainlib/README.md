@@ -23,9 +23,11 @@ configuration format with `version` equal to `WatchOptions.PayloadVersion`.
 Mainlib decodes and version-checks each document, serializes calls to that
 consumer's existing configuration loader, and returns its result. It does not
 expose the internal Go configuration type or change the loader's semantics.
-For MCP, include `mcpConfig` in the document; omitting it is an existing loader
-no-op, not a request to remove MCP configuration. An empty `mcpConfig: {}`
-replaces the MCP configuration with an empty one.
+Custom MCP subscriptions must include `mcpConfig` in each document. Mainlib
+rejects an absent section before calling the loader or acknowledging the update,
+because the existing loader treats omission as a no-op. An empty `mcpConfig: {}`
+explicitly replaces the MCP configuration with an empty one. The existing file
+watcher's handling of omitted sections is preserved.
 
 - Set a positive `Options.MaxConfigBytes` and omit `--configBundlePath` when
   installing a custom factory. Enforce the same limit while fetching; mainlib

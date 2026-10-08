@@ -32,7 +32,8 @@ const (
 // Nil acknowledges acceptance by this receiver only. On error, the watcher
 // should retry without advancing its checkpoint. The caller must not mutate
 // payload until the call returns. Errors may contain sensitive input and must
-// not be logged without redaction.
+// not be logged without redaction. MCP documents must include mcpConfig;
+// mcpConfig: {} explicitly replaces the current MCP configuration with an empty one.
 type ApplyConfig func(payload []byte) error
 
 // WatchOptions describes the consumer to a configuration watcher.
@@ -87,9 +88,10 @@ type configReceiver struct {
 // Each receiver gets its own watcher and apply callback because acceptance is
 // independent: an LLM apply must not acknowledge an MCP update that failed.
 // Checkpoints and retries belong to the watcher. The callback serializes applies
-// to its receiver, decodes and version-checks complete documents, and reports the
-// existing loader's result. It neither orders source revisions nor makes updates
-// across consumers atomic; watchers must deliver replacements in source order.
+// to its receiver, decodes and version-checks complete documents, checks for MCP
+// configuration when that scope is requested, and reports the existing loader's
+// result. It neither orders source revisions nor makes updates across consumers
+// atomic; watchers must deliver replacements in source order.
 //
 // Construction finishes for every consumer before any Run call starts. A factory
 // error therefore leaves no running subscriptions. Run calls then execute
@@ -135,7 +137,7 @@ func startConfigWatchers(ctx context.Context, fail context.CancelCauseFunc, opts
 	for i, receiver := range receivers {
 		initialized := make(chan struct{})
 		ready[i] = initialized
-		apply := configApplier(watchCtx, ctx, opts.MaxConfigBytes, receiver.receiver, initialized)
+		apply := configApplier(watchCtx, ctx, opts.MaxConfigBytes, receiver, initialized)
 		wg.Add(1)
 		go func(watcher ConfigWatcher, target ConfigTarget) {
 			defer wg.Done()
@@ -165,7 +167,7 @@ func startConfigWatchers(ctx context.Context, fail context.CancelCauseFunc, opts
 	return stop, nil
 }
 
-func configApplier(watchCtx, runtimeCtx context.Context, maxBytes int64, receiver filterapi.ConfigReceiver,
+func configApplier(watchCtx, runtimeCtx context.Context, maxBytes int64, receiver configReceiver,
 	initialized chan struct{},
 ) ApplyConfig {
 	var mu sync.Mutex
@@ -186,9 +188,15 @@ func configApplier(watchCtx, runtimeCtx context.Context, maxBytes int64, receive
 		if cfg.Version != version.Parse() {
 			return fmt.Errorf("config version mismatch: expected %q, got %q", version.Parse(), cfg.Version)
 		}
+		// The MCP loader treats an absent section as a successful no-op. For a
+		// scoped subscription that would acknowledge an update without installing
+		// it, including falsely satisfying the initial configuration gate.
+		if receiver.target == ConfigTargetMCP && cfg.MCPConfig == nil {
+			return errors.New("mcp configuration must include mcpConfig")
+		}
 		// Runtime credential handlers may retain this context. A fetch deadline must
 		// not cancel state that was successfully installed for subsequent requests.
-		if err := receiver.LoadConfig(runtimeCtx, &cfg); err != nil {
+		if err := receiver.receiver.LoadConfig(runtimeCtx, &cfg); err != nil {
 			return fmt.Errorf("apply configuration: %w", err)
 		}
 		if !ready {
