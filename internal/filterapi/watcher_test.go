@@ -50,7 +50,7 @@ func newTestLoggerWithBuffer() (*slog.Logger, internaltesting.OutBuffer) {
 	return logger, buf
 }
 
-func TestStartConfigBundleWatcher(t *testing.T) {
+func TestRunConfigBundleWatcher(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		tmpdir := t.TempDir()
 		bundleDir := filepath.Join(tmpdir, "bundle")
@@ -74,8 +74,22 @@ func TestStartConfigBundleWatcher(t *testing.T) {
 
 		writeBundle("version: dev\nbackends:\n- name: first\n")
 		logger, buf := newTestLoggerWithBuffer()
-		err := StartConfigBundleWatcher(t.Context(), bundleDir, rcv, logger, tickInterval)
-		require.NoError(t, err)
+		ctx, cancel := context.WithCancel(t.Context())
+		started := make(chan struct{})
+		done := make(chan error, 1)
+		go func() {
+			done <- RunConfigBundleWatcher(ctx, bundleDir, rcv, logger, tickInterval, func() { close(started) })
+		}()
+		defer func() {
+			cancel()
+			require.NoError(t, <-done)
+		}()
+		synctest.Wait()
+		select {
+		case <-started:
+		default:
+			t.Fatal("watcher did not signal startup")
+		}
 
 		require.Eventually(t, func() bool {
 			cfg := rcv.getConfig()
