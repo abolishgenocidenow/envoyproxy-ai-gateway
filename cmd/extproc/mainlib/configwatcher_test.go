@@ -17,6 +17,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	extprocv3 "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
@@ -282,7 +283,8 @@ func TestConfigWatchersIndependentInitialization(t *testing.T) {
 	started := make(chan func(), 1)
 	startErr := make(chan error, 1)
 	go func() {
-		stop, err := startConfigWatchers(ctx, cancel, opts, slog.New(slog.NewTextHandler(io.Discard, nil)), receivers)
+		factory := resolveConfigSubscriptionFactory(ctx, opts, "", slog.New(slog.NewTextHandler(io.Discard, nil)))
+		stop, err := startConfigWatchers(ctx, cancel, factory, receivers)
 		if err != nil {
 			startErr <- err
 			return
@@ -335,9 +337,11 @@ func TestConfigWatchersTermination(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx, cancel := context.WithCancelCause(t.Context())
 			defer cancel(nil)
-			_, err := startConfigWatchers(ctx, cancel, Options{MaxConfigBytes: 1024, ConfigWatcherFactory: func(WatchOptions) (ConfigWatcher, error) {
+			opts := Options{MaxConfigBytes: 1024, ConfigWatcherFactory: func(WatchOptions) (ConfigWatcher, error) {
 				return watcherFunc(func(context.Context, ApplyConfig) error { return tc.runErr }), nil
-			}}, slog.Default(), []configReceiver{{ConfigTargetLLM, receiverFunc(func(context.Context, *filterapi.Config) error { return nil })}})
+			}}
+			factory := resolveConfigSubscriptionFactory(ctx, opts, "", slog.Default())
+			_, err := startConfigWatchers(ctx, cancel, factory, []configReceiver{{ConfigTargetLLM, receiverFunc(func(context.Context, *filterapi.Config) error { return nil })}})
 			require.ErrorContains(t, err, "llm configuration watcher stopped")
 			if tc.runErr != nil {
 				require.ErrorIs(t, err, tc.runErr)
@@ -351,12 +355,14 @@ func TestConfigWatchersFactoryFailure(t *testing.T) {
 		ctx, cancel := context.WithCancelCause(t.Context())
 		defer cancel(nil)
 		var started bool
-		_, err := startConfigWatchers(ctx, cancel, Options{MaxConfigBytes: 1024, ConfigWatcherFactory: func(o WatchOptions) (ConfigWatcher, error) {
+		opts := Options{MaxConfigBytes: 1024, ConfigWatcherFactory: func(o WatchOptions) (ConfigWatcher, error) {
 			if o.Target == ConfigTargetMCP {
 				return nil, factoryErr
 			}
 			return watcherFunc(func(context.Context, ApplyConfig) error { started = true; return nil }), nil
-		}}, slog.Default(), []configReceiver{{target: ConfigTargetLLM}, {target: ConfigTargetMCP}})
+		}}
+		factory := resolveConfigSubscriptionFactory(ctx, opts, "", slog.Default())
+		_, err := startConfigWatchers(ctx, cancel, factory, []configReceiver{{target: ConfigTargetLLM}, {target: ConfigTargetMCP}})
 		require.Error(t, err)
 		require.False(t, started, "do not start watchers until every factory succeeds")
 	}
@@ -368,14 +374,16 @@ func TestConfigWatchersCancelBeforeInitialConfig(t *testing.T) {
 	exited := make(chan struct{})
 	result := make(chan error, 1)
 	go func() {
-		_, err := startConfigWatchers(ctx, cancel, Options{MaxConfigBytes: 1024, ConfigWatcherFactory: func(WatchOptions) (ConfigWatcher, error) {
+		opts := Options{MaxConfigBytes: 1024, ConfigWatcherFactory: func(WatchOptions) (ConfigWatcher, error) {
 			return watcherFunc(func(ctx context.Context, _ ApplyConfig) error {
 				close(entered)
 				<-ctx.Done()
 				close(exited)
 				return nil
 			}), nil
-		}}, slog.Default(), []configReceiver{{target: ConfigTargetLLM}})
+		}}
+		factory := resolveConfigSubscriptionFactory(ctx, opts, "", slog.Default())
+		_, err := startConfigWatchers(ctx, cancel, factory, []configReceiver{{target: ConfigTargetLLM}})
 		result <- err
 	}()
 	<-entered
@@ -390,6 +398,99 @@ func TestConfigWatchersCancelBeforeInitialConfig(t *testing.T) {
 	case <-exited:
 	default:
 		t.Fatal("watcher not joined")
+	}
+}
+
+func TestDefaultConfigSubscriptions(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		partial bool
+		wantErr string
+	}{
+		{name: "complete"},
+		{name: "missing part", partial: true},
+		{name: "checksum mismatch", partial: true},
+		{name: "missing index", wantErr: "failed to load initial bundled config"},
+		{name: "invalid payload", wantErr: "failed to unmarshal bundled config"},
+		{name: "wrong version", wantErr: "config version mismatch"},
+		{name: "receiver rejection", wantErr: "receiver rejected configuration"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				ctx, cancel := context.WithCancelCause(t.Context())
+				defer cancel(nil)
+				bundlePath := t.TempDir()
+				payload := configPayload("initial")
+				switch tc.name {
+				case "invalid payload":
+					payload = []byte("[broken")
+				case "wrong version":
+					payload = []byte("version: incompatible\n")
+				}
+				part := filterapi.ConfigBundlePart{Name: "config", Path: filterapi.ConfigBundlePartPath(0)}
+				partPath := filepath.Join(bundlePath, part.Path)
+				require.NoError(t, os.MkdirAll(filepath.Dir(partPath), 0o700))
+				if tc.name != "missing part" {
+					raw := payload
+					if tc.name == "checksum mismatch" {
+						raw = configPayload("old-generation")
+					}
+					require.NoError(t, os.WriteFile(partPath, raw, 0o600))
+				}
+				index, err := filterapi.MarshalConfigBundleIndex(&filterapi.ConfigBundleIndex{
+					Checksum: filterapi.ConfigBundleChecksum(payload), Parts: []filterapi.ConfigBundlePart{part},
+				})
+				require.NoError(t, err)
+				if tc.name != "missing index" {
+					require.NoError(t, os.WriteFile(filepath.Join(bundlePath, filterapi.ConfigBundleIndexFileName), index, 0o600))
+				}
+				var llmCalls, mcpCalls atomic.Int32
+				receivers := []configReceiver{
+					{ConfigTargetLLM, receiverFunc(func(context.Context, *filterapi.Config) error {
+						if tc.name == "receiver rejection" {
+							return errors.New("receiver rejected configuration")
+						}
+						llmCalls.Add(1)
+						return nil
+					})},
+					// File mode keeps the existing loader semantics, including an
+					// absent MCP section; custom-source validation must not run here.
+					{ConfigTargetMCP, receiverFunc(func(context.Context, *filterapi.Config) error {
+						mcpCalls.Add(1)
+						return nil
+					})},
+				}
+				factory := resolveConfigSubscriptionFactory(ctx, Options{}, bundlePath, slog.New(slog.NewTextHandler(io.Discard, nil)))
+				stop, err := startConfigWatchers(ctx, cancel, factory, receivers)
+				if tc.wantErr != "" {
+					require.ErrorContains(t, err, tc.wantErr)
+					require.Nil(t, stop)
+					return
+				}
+				require.NoError(t, err)
+				defer stop()
+				if tc.partial {
+					require.Zero(t, llmCalls.Load(), "legacy file startup must allow a partial bundle")
+					require.Zero(t, mcpCalls.Load())
+					require.NoError(t, os.WriteFile(partPath, payload, 0o600))
+					time.Sleep(5 * time.Second)
+					synctest.Wait()
+				}
+				require.EqualValues(t, 1, llmCalls.Load())
+				require.EqualValues(t, 1, mcpCalls.Load())
+				stop()
+				require.NoError(t, ctx.Err(), "stopping subscriptions must not cancel their caller")
+				// A changed file after stop must not reach either receiver.
+				stat, err := os.Stat(partPath)
+				require.NoError(t, err)
+				later := stat.ModTime().Add(time.Second)
+				require.NoError(t, os.Chtimes(partPath, later, later))
+				time.Sleep(5 * time.Second)
+				synctest.Wait()
+				require.EqualValues(t, 1, llmCalls.Load())
+				require.EqualValues(t, 1, mcpCalls.Load())
+			})
+		})
 	}
 }
 

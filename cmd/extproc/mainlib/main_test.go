@@ -462,6 +462,8 @@ backends:
 
 	// Create a pipe for stderr.
 	stderrR, stderrW := io.Pipe()
+	defer stderrR.Close()
+	defer stderrW.Close()
 
 	// Start a goroutine to scan stderr until it reaches "AI Gateway External Processor is ready" written by envoy.
 	go func() {
@@ -469,7 +471,7 @@ backends:
 		for scanner.Scan() {
 			if strings.Contains(scanner.Text(), "AI Gateway External Processor is ready") {
 				cancel() // interrupts extproc.
-				return
+				// Keep draining logs until Main has joined the file subscriptions.
 			}
 		}
 	}()
@@ -483,6 +485,7 @@ backends:
 	// Run ExtProc in a goroutine on ephemeral ports.
 	errCh := make(chan error, 1)
 	go func() {
+		defer stderrW.Close()
 		args := []string{
 			"-configBundlePath", configBundlePath,
 			"-extProcAddr", ":0",
@@ -501,5 +504,12 @@ backends:
 		t.Fatal("timeout waiting for startup message")
 	case err := <-errCh:
 		require.NoError(t, err, "extproc exited with error before startup message")
+		return
+	}
+	select {
+	case err := <-errCh:
+		require.NoError(t, err)
+	case <-timeout.Done():
+		t.Fatal("timeout waiting for extproc shutdown")
 	}
 }

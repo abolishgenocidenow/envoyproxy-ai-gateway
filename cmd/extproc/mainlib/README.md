@@ -5,6 +5,14 @@
 `MainWithOptions(ctx, args, stderr, opts)` with a `ConfigWatcherFactory`. No store
 or network protocol is required by mainlib.
 
+`Main` delegates to `MainWithOptions` with zero-value options. Mainlib resolves
+the default file adapter or custom factory once, then uses the same supervisor
+to start, cancel and join every enabled subscription. Initialization policy
+belongs to the adapter: file mode preserves startup during missing-part or
+checksum-mismatch retries, while custom watchers must apply an initial document
+successfully. Other initial file errors still prevent startup. File mode reuses
+the existing bundle decoder and loaders without serializing the document again.
+
 The factory receives `WatchOptions` once for each enabled consumer:
 
 | Target            | Consumer                                |

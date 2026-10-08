@@ -29,7 +29,6 @@ import (
 
 	"github.com/envoyproxy/ai-gateway/internal/endpointspec"
 	"github.com/envoyproxy/ai-gateway/internal/extproc"
-	"github.com/envoyproxy/ai-gateway/internal/filterapi"
 	"github.com/envoyproxy/ai-gateway/internal/internalapi"
 	"github.com/envoyproxy/ai-gateway/internal/mcpproxy"
 	"github.com/envoyproxy/ai-gateway/internal/metrics"
@@ -255,6 +254,7 @@ func MainWithOptions(ctx context.Context, args []string, stderr io.Writer, opts 
 	}
 
 	l := slog.New(newLogHandler(stderr, flags.logLevel, flags.logFormat))
+	watcherFactory := resolveConfigSubscriptionFactory(ctx, opts, flags.configBundlePath, l)
 
 	l.Info("starting external processor",
 		slog.String("version", version.Parse()),
@@ -410,13 +410,8 @@ func MainWithOptions(ctx context.Context, args []string, stderr io.Writer, opts 
 	server.Register(path.Join(flags.rootPrefix, endpointPrefixes.Anthropic, "/v1/messages/count_tokens"), extproc.NewFactory(
 		countTokensMetricsFactory, tracing.CountTokensTracer(), endpointspec.MessagesCountTokensEndpointSpec{}))
 
-	// Create and register gRPC server with ExternalProcessorServer (the service Envoy calls).
+	// Collect enabled configuration consumers before starting subscriptions.
 	receivers := []configReceiver{{target: ConfigTargetLLM, receiver: server}}
-	if opts.ConfigWatcherFactory == nil {
-		if err = filterapi.StartConfigBundleWatcher(ctx, flags.configBundlePath, server, l, time.Second*5); err != nil {
-			return fmt.Errorf("failed to start config watcher: %w", err)
-		}
-	}
 
 	var mcpServer *http.Server
 	if mcpLis != nil {
@@ -446,11 +441,6 @@ func MainWithOptions(ctx context.Context, args []string, stderr io.Writer, opts 
 			return fmt.Errorf("failed to create MCP proxy: %w", err)
 		}
 		receivers = append(receivers, configReceiver{target: ConfigTargetMCP, receiver: mcpProxyConfig})
-		if opts.ConfigWatcherFactory == nil {
-			if err = filterapi.StartConfigBundleWatcher(ctx, flags.configBundlePath, mcpProxyConfig, l, time.Second*5); err != nil {
-				return fmt.Errorf("failed to start config watcher: %w", err)
-			}
-		}
 
 		mcpServer = &http.Server{
 			Handler:           mcpProxyMux,
@@ -460,13 +450,11 @@ func MainWithOptions(ctx context.Context, args []string, stderr io.Writer, opts 
 		defer mcpServer.Close()
 	}
 
-	if opts.ConfigWatcherFactory != nil {
-		stop, startErr := startConfigWatchers(ctx, cancel, opts, l, receivers)
-		if startErr != nil {
-			return startErr
-		}
-		defer func() { cancel(nil); stop() }()
+	stop, startErr := startConfigWatchers(ctx, cancel, watcherFactory, receivers)
+	if startErr != nil {
+		return startErr
 	}
+	defer func() { cancel(nil); stop() }()
 	if mcpServer != nil {
 		go func() {
 			l.Info("Starting mcp proxy", "addr", mcpLis.Addr())
