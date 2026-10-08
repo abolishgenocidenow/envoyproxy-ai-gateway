@@ -18,6 +18,7 @@ import (
 	"os"
 	"path"
 	"strings"
+	"sync"
 	"time"
 
 	extprocv3 "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
@@ -320,12 +321,26 @@ func MainWithOptions(ctx context.Context, args []string, stderr io.Writer, opts 
 		return err
 	}
 
+	var metricsShutdown func(context.Context) error
+	var telemetryShutdownOnce sync.Once
+	shutdownTelemetry := func(shutdownCtx context.Context) {
+		telemetryShutdownOnce.Do(func() {
+			if shutdownErr := tracing.Shutdown(shutdownCtx); shutdownErr != nil {
+				l.Error("Failed to shutdown tracing gracefully", "error", shutdownErr)
+			}
+			if metricsShutdown != nil {
+				if shutdownErr := metricsShutdown(shutdownCtx); shutdownErr != nil {
+					l.Error("Failed to shutdown metrics gracefully", "error", shutdownErr)
+				}
+			}
+		})
+	}
+	// Cover startup failures before the server shutdown goroutine exists. Normal
+	// shutdown calls this first with the shared server cleanup deadline below.
 	defer func() {
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer shutdownCancel()
-		if shutdownErr := tracing.Shutdown(shutdownCtx); shutdownErr != nil {
-			l.Error("Failed to shutdown tracing gracefully", "error", shutdownErr)
-		}
+		shutdownTelemetry(shutdownCtx)
 	}()
 
 	// Create Prometheus registry and reader which automatically converts
@@ -341,13 +356,6 @@ func MainWithOptions(ctx context.Context, args []string, stderr io.Writer, opts 
 	if err != nil {
 		return fmt.Errorf("failed to create metrics: %w", err)
 	}
-	defer func() {
-		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer shutdownCancel()
-		if shutdownErr := metricsShutdown(shutdownCtx); shutdownErr != nil {
-			l.Error("Failed to shutdown metrics gracefully", "error", shutdownErr)
-		}
-	}()
 	chatCompletionMetricsFactory := metrics.NewMetricsFactory(meter, metricsRequestHeaderAttributes, metrics.GenAIOperationChat)
 	messagesMetricsFactory := metrics.NewMetricsFactory(meter, metricsRequestHeaderAttributes, metrics.GenAIOperationMessages)
 	completionMetricsFactory := metrics.NewMetricsFactory(meter, metricsRequestHeaderAttributes, metrics.GenAIOperationCompletion)
@@ -501,6 +509,7 @@ func MainWithOptions(ctx context.Context, args []string, stderr io.Writer, opts 
 		if err := adminServer.Shutdown(shutdownCtx); err != nil {
 			l.Error("Failed to shutdown admin server gracefully", "error", err)
 		}
+		shutdownTelemetry(shutdownCtx)
 		if mcpServer != nil {
 			if err := mcpServer.Shutdown(shutdownCtx); err != nil {
 				l.Error("Failed to shutdown mcp proxy server gracefully", "error", err)

@@ -9,21 +9,139 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/contrib/exporters/autoexport"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 
 	"github.com/envoyproxy/ai-gateway/internal/filterapi"
 	"github.com/envoyproxy/ai-gateway/internal/internalapi"
 	"github.com/envoyproxy/ai-gateway/internal/json"
 )
+
+type shutdownSpanExporter struct {
+	shutdown func(context.Context) error
+}
+
+func (*shutdownSpanExporter) ExportSpans(context.Context, []sdktrace.ReadOnlySpan) error { return nil }
+
+func (e *shutdownSpanExporter) Shutdown(ctx context.Context) error { return e.shutdown(ctx) }
+
+type shutdownMetricReader struct {
+	sdkmetric.Reader
+	shutdown func(context.Context) error
+}
+
+func (r *shutdownMetricReader) Shutdown(ctx context.Context) error {
+	return errors.Join(r.Reader.Shutdown(ctx), r.shutdown(ctx))
+}
+
+func TestMainTelemetryShutdown(t *testing.T) {
+	for _, scenario := range []string{"factory error", "initial watcher error", "normal shutdown", "metrics initialization error", "tracing shutdown error"} {
+		t.Run(scenario, func(t *testing.T) {
+			type shutdownCall struct {
+				name        string
+				deadline    time.Time
+				hasDeadline bool
+				contextErr  error
+			}
+			var mu sync.Mutex
+			var calls []shutdownCall
+			failure := errors.New("telemetry lifecycle test failure")
+			observe := func(name string) func(context.Context) error {
+				return func(ctx context.Context) error {
+					deadline, hasDeadline := ctx.Deadline()
+					mu.Lock()
+					calls = append(calls, shutdownCall{name, deadline, hasDeadline, ctx.Err()})
+					mu.Unlock()
+					if name == "traces" && scenario == "tracing shutdown error" {
+						return failure
+					}
+					return nil
+				}
+			}
+			// Registry entries cannot be removed; unique names also allow -count runs.
+			exporterName := "mainlib-shutdown-" + uuid.NewString()
+			autoexport.RegisterSpanExporter(exporterName, func(context.Context) (sdktrace.SpanExporter, error) {
+				return &shutdownSpanExporter{shutdown: observe("traces")}, nil
+			})
+			autoexport.RegisterMetricReader(exporterName, func(context.Context) (sdkmetric.Reader, error) {
+				if scenario == "metrics initialization error" {
+					return nil, failure
+				}
+				return &shutdownMetricReader{Reader: sdkmetric.NewManualReader(), shutdown: observe("metrics")}, nil
+			})
+			t.Setenv("OTEL_SDK_DISABLED", "false")
+			t.Setenv("OTEL_TRACES_EXPORTER", exporterName)
+			t.Setenv("OTEL_METRICS_EXPORTER", exporterName)
+			// Enable the custom metric reader without using an external collector.
+			t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://unused.invalid")
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			var logs bytes.Buffer
+			output := writerFunc(func(p []byte) (int, error) {
+				mu.Lock()
+				defer mu.Unlock()
+				if strings.Contains(string(p), "AI Gateway External Processor is ready") {
+					cancel()
+				}
+				return logs.Write(p)
+			})
+			err := MainWithOptions(ctx, []string{"--extProcAddr", ":0", "--adminPort", "0"}, output, Options{
+				MaxConfigBytes: 1024,
+				ConfigWatcherFactory: func(WatchOptions) (ConfigWatcher, error) {
+					if scenario == "factory error" {
+						return nil, failure
+					}
+					return watcherFunc(func(ctx context.Context, apply ApplyConfig) error {
+						if scenario == "initial watcher error" {
+							return failure
+						}
+						if applyErr := apply(configPayload("telemetry")); applyErr != nil {
+							return applyErr
+						}
+						<-ctx.Done()
+						return nil
+					}), nil
+				},
+			})
+			if scenario == "normal shutdown" || scenario == "tracing shutdown error" {
+				require.NoError(t, err)
+			} else {
+				require.ErrorIs(t, err, failure)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if scenario == "tracing shutdown error" {
+				require.Contains(t, logs.String(), "Failed to shutdown tracing gracefully")
+			}
+			if scenario == "metrics initialization error" {
+				require.Len(t, calls, 1)
+			} else {
+				require.Len(t, calls, 2, "both providers must shut down before Main returns")
+				require.Equal(t, calls[0].deadline, calls[1].deadline, "telemetry must share one cleanup deadline")
+				require.Equal(t, "metrics", calls[1].name)
+			}
+			require.Equal(t, "traces", calls[0].name)
+			for _, call := range calls {
+				require.True(t, call.hasDeadline)
+				require.NoError(t, call.contextErr, "cleanup must not inherit process cancellation")
+				require.LessOrEqual(t, time.Until(call.deadline), 5*time.Second)
+			}
+		})
+	}
+}
 
 func Test_newLogHandler(t *testing.T) {
 	t.Run("json emits parseable records", func(t *testing.T) {
