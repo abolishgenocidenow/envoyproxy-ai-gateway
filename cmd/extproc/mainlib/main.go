@@ -411,7 +411,25 @@ func MainWithOptions(ctx context.Context, args []string, stderr io.Writer, opts 
 	server.Register(path.Join(flags.rootPrefix, endpointPrefixes.Anthropic, "/v1/messages/count_tokens"), extproc.NewFactory(
 		countTokensMetricsFactory, tracing.CountTokensTracer(), endpointspec.MessagesCountTokensEndpointSpec{}))
 
-	// Collect enabled configuration consumers before starting subscriptions.
+	// MainWithOptions owns server construction and therefore explicitly registers
+	// the configuration consumers enabled in this process. The LLM server above
+	// is always present; optional consumers are appended after their construction.
+	// This list describes consumers, not configuration sources or connections.
+	//
+	// ConfigWatcherFactory lets downstream applications replace how configuration
+	// reaches these consumers. It does not register new servers or enable them.
+	// Each registration pairs a query scope (target) with the existing loader
+	// (receiver) and, when needed, validation for custom-source snapshots (validate).
+	// The target lets the factory select configuration for that consumer; it does
+	// not select a transport. File subscriptions retain their loader semantics.
+	//
+	// To add a built-in consumer, construct it here and append its registration,
+	// including any scoped snapshot validation, before calling startConfigWatchers.
+	// The supervisor manages startup, cancellation and joining for every entry
+	// without branching on consumer identity. Each subscription independently
+	// acknowledges updates; acceptance by one consumer cannot acknowledge another.
+	// Exposing arbitrary downstream consumers would require a separate public API
+	// for their construction and lifecycle, beyond the delivery extension point.
 	receivers := []configReceiver{{target: ConfigTargetLLM, receiver: server}}
 
 	var mcpServer *http.Server
