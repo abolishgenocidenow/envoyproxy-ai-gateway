@@ -57,6 +57,7 @@ type Server struct {
 	debugLogEnabled               bool
 	enableRedaction               bool
 	config                        *filterapi.RuntimeConfig
+	configMutex                   sync.RWMutex
 	processorFactories            map[string]ProcessorFactory
 	routerProcessorsPerReqID      map[string]Processor
 	routerProcessorsPerReqIDMutex sync.RWMutex
@@ -77,14 +78,27 @@ func NewServer(logger *slog.Logger, enableRedaction bool) (*Server, error) {
 	return srv, nil
 }
 
-// LoadConfig updates the configuration of the external processor.
+// LoadConfig builds and publishes a complete runtime configuration. Failed
+// builds leave the previous snapshot unchanged. Readers retain their snapshots
+// without holding the publication lock; this does not coordinate route activation.
+// Callers must not mutate config after passing it to LoadConfig.
 func (s *Server) LoadConfig(ctx context.Context, config *filterapi.Config) error {
 	newConfig, err := filterapi.NewRuntimeConfig(ctx, config, backendauth.NewHandler)
 	if err != nil {
 		return fmt.Errorf("cannot create runtime filter config: %w", err)
 	}
-	s.config = newConfig // This is racey, but we don't care.
+	s.configMutex.Lock()
+	s.config = newConfig
+	s.configMutex.Unlock()
 	return nil
+}
+
+// currentConfig returns a fully constructed runtime snapshot. Published snapshots
+// must not be mutated; processors may retain them across subsequent reloads.
+func (s *Server) currentConfig() *filterapi.RuntimeConfig {
+	s.configMutex.RLock()
+	defer s.configMutex.RUnlock()
+	return s.config
 }
 
 // Register a new processor for the given request path.
@@ -113,7 +127,7 @@ func (s *Server) processorForPath(requestHeaders map[string]string, isUpstreamFi
 	if !ok {
 		return nil, fmt.Errorf("%w: %s", errNoProcessor, path)
 	}
-	return newProcessor(s.config, requestHeaders, logger, isUpstreamFilter, s.enableRedaction)
+	return newProcessor(s.currentConfig(), requestHeaders, logger, isUpstreamFilter, s.enableRedaction)
 }
 
 // originalPathHeader is the header used to pass the original path to the processor.
@@ -128,7 +142,7 @@ const internalReqIDHeader = internalapi.EnvoyAIGatewayHeaderPrefix + "internal-r
 func (s *Server) Process(stream extprocv3.ExternalProcessor_ProcessServer) error {
 	ctx := stream.Context()
 	if s.debugLogEnabled {
-		s.logger.Debug("handling a new stream", slog.Any("config_uuid", s.config.UUID))
+		s.logger.Debug("handling a new stream", slog.Any("config_uuid", s.currentConfig().UUID))
 	}
 
 	// The processor will be instantiated when the first message containing the request headers is received.
@@ -384,7 +398,7 @@ func (s *Server) setBackend(ctx context.Context, p Processor, internalReqID stri
 	}
 	routeName := resolveRouteName(attributes)
 
-	backend, ok := s.config.Backends[backendName]
+	backend, ok := s.currentConfig().Backends[backendName]
 	if !ok {
 		return status.Errorf(codes.Internal, "unknown backend: %s", backendName)
 	}
