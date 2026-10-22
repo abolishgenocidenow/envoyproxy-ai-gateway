@@ -52,9 +52,18 @@ func loggerFromContext(ctx context.Context) *slog.Logger {
 	return nil
 }
 
+// requestProcessor pins the immutable configuration used by the router.
+// Upstream attempts and retries must use that same snapshot. Credential
+// authority is still rechecked by the authentication handler per attempt.
+type requestProcessor struct {
+	processor Processor
+	config    *filterapi.RuntimeConfig
+}
+
 // Server implements the external processor server.
 type Server struct {
 	credentialResolver runtimeapi.CredentialResolver
+	pinRequestConfig   bool
 
 	logger                        *slog.Logger
 	debugLogEnabled               bool
@@ -62,13 +71,16 @@ type Server struct {
 	config                        *filterapi.RuntimeConfig
 	configMutex                   sync.RWMutex
 	processorFactories            map[string]ProcessorFactory
-	routerProcessorsPerReqID      map[string]Processor
+	routerProcessorsPerReqID      map[string]requestProcessor
 	routerProcessorsPerReqIDMutex sync.RWMutex
 	uuidFn                        func() string
 }
 
 // ServerOptions contains immutable construction-time runtime extensions.
-type ServerOptions struct{ CredentialResolver runtimeapi.CredentialResolver }
+type ServerOptions struct {
+	CredentialResolver runtimeapi.CredentialResolver
+	PinRequestConfig   bool
+}
 
 // NewServer creates a new external processor server.
 func NewServer(logger *slog.Logger, enableRedaction bool) (*Server, error) {
@@ -80,11 +92,12 @@ func NewServerWithOptions(logger *slog.Logger, enableRedaction bool, opts Server
 	debugLogEnabled := logger.Enabled(context.Background(), slog.LevelDebug)
 	srv := &Server{
 		credentialResolver:       opts.CredentialResolver,
+		pinRequestConfig:         opts.PinRequestConfig,
 		logger:                   logger,
 		debugLogEnabled:          debugLogEnabled,
 		enableRedaction:          enableRedaction,
 		processorFactories:       make(map[string]ProcessorFactory),
-		routerProcessorsPerReqID: make(map[string]Processor),
+		routerProcessorsPerReqID: make(map[string]requestProcessor),
 		uuidFn:                   uuid.NewString,
 	}
 	return srv, nil
@@ -126,6 +139,10 @@ var errNoProcessor = errors.New("no processor registered for the given path")
 // processorForPath returns the processor for the given path.
 // Only exact path matching is supported currently.
 func (s *Server) processorForPath(requestHeaders map[string]string, isUpstreamFilter bool, logger *slog.Logger) (Processor, error) {
+	return s.processorForConfig(s.currentConfig(), requestHeaders, isUpstreamFilter, logger)
+}
+
+func (s *Server) processorForConfig(config *filterapi.RuntimeConfig, requestHeaders map[string]string, isUpstreamFilter bool, logger *slog.Logger) (Processor, error) {
 	pathHeader := ":path"
 	if isUpstreamFilter {
 		pathHeader = originalPathHeader
@@ -141,7 +158,7 @@ func (s *Server) processorForPath(requestHeaders map[string]string, isUpstreamFi
 	if !ok {
 		return nil, fmt.Errorf("%w: %s", errNoProcessor, path)
 	}
-	return newProcessor(s.currentConfig(), requestHeaders, logger, isUpstreamFilter, s.enableRedaction)
+	return newProcessor(config, requestHeaders, logger, isUpstreamFilter, s.enableRedaction)
 }
 
 // originalPathHeader is the header used to pass the original path to the processor.
@@ -229,7 +246,15 @@ func (s *Server) Process(stream extprocv3.ExternalProcessor_ProcessServer) error
 			// Add logger to context so processMsg can access it
 			ctx = context.WithValue(ctx, loggerContextKey, logger)
 
-			p, err = s.processorForPath(headersMap, isUpstreamFilter, logger)
+			config := s.currentConfig()
+			if isUpstreamFilter && s.pinRequestConfig {
+				s.routerProcessorsPerReqIDMutex.RLock()
+				if parent, ok := s.routerProcessorsPerReqID[internalReqID]; ok {
+					config = parent.config
+				}
+				s.routerProcessorsPerReqIDMutex.RUnlock()
+			}
+			p, err = s.processorForConfig(config, headersMap, isUpstreamFilter, logger)
 			if err != nil {
 				if errors.Is(err, errNoProcessor) {
 					path := headersMap[":path"]
@@ -255,7 +280,7 @@ func (s *Server) Process(stream extprocv3.ExternalProcessor_ProcessServer) error
 				}
 			} else {
 				s.routerProcessorsPerReqIDMutex.Lock()
-				s.routerProcessorsPerReqID[internalReqID] = p
+				s.routerProcessorsPerReqID[internalReqID] = requestProcessor{processor: p, config: config}
 				s.routerProcessorsPerReqIDMutex.Unlock()
 			}
 		}
@@ -412,11 +437,6 @@ func (s *Server) setBackend(ctx context.Context, p Processor, internalReqID stri
 	}
 	routeName := resolveRouteName(attributes)
 
-	backend, ok := s.currentConfig().Backends[backendName]
-	if !ok {
-		return status.Errorf(codes.Internal, "unknown backend: %s", backendName)
-	}
-
 	s.routerProcessorsPerReqIDMutex.RLock()
 	defer s.routerProcessorsPerReqIDMutex.RUnlock()
 	routerProcessor, ok := s.routerProcessorsPerReqID[internalReqID]
@@ -425,7 +445,15 @@ func (s *Server) setBackend(ctx context.Context, p Processor, internalReqID stri
 			internalReqID, backendName)
 	}
 
-	if err := p.SetBackend(ctx, backend, routeName, routerProcessor); err != nil {
+	config := s.currentConfig()
+	if s.pinRequestConfig {
+		config = routerProcessor.config
+	}
+	backend, ok := config.Backends[backendName]
+	if !ok {
+		return status.Errorf(codes.Internal, "unknown backend: %s", backendName)
+	}
+	if err := p.SetBackend(ctx, backend, routeName, routerProcessor.processor); err != nil {
 		return status.Errorf(codes.Internal, "cannot set backend: %v", err)
 	}
 	return nil

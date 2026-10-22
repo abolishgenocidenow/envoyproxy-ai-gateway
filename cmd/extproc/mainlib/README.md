@@ -133,3 +133,11 @@ remain the adapter's responsibility.
 A production transport also needs appropriate authentication, TLS, redirect
 policy, retry backoff/jitter and diagnostics. Configuration can contain
 credentials: do not log documents, response bodies or unredacted apply errors.
+
+`Options.PinRequestConfig` is an opt-in request-lifetime primitive for applications
+that coordinate route generations. It pins upstream attempts and retries to the
+router processor's immutable configuration across reloads. Credential resolution
+still runs on every attempt. The default retains legacy latest-backend behavior.
+Pinning does not qualify pods, activate xDS, bound retained generations, or prove
+route compatibility. Do not enable it before coordinating route generation
+selection and retirement in the embedding application.

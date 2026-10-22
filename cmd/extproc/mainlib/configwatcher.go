@@ -68,6 +68,12 @@ type ConfigWatcherFactory func(WatchOptions) (ConfigWatcher, error)
 // Options configures optional extensions to Main. Its zero value preserves the
 // bundle-file watcher, including its startup behavior.
 type Options struct {
+	// PinRequestConfig keeps upstream attempts and retries on the immutable
+	// snapshot selected by their router processor. Enable only with coordinated
+	// route generations; the default preserves legacy latest-backend selection.
+	// This does not activate routes, cap retained generations or renew credentials.
+	PinRequestConfig bool
+
 	// CredentialResolver resolves explicit externalCredential backend references
 	// for every upstream authentication attempt. Nil rejects such references.
 	CredentialResolver runtimeapi.CredentialResolver
