@@ -15,6 +15,7 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"sync"
 
 	corev3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	extprocv3http "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/http/ext_proc/v3"
@@ -101,6 +102,8 @@ type (
 		// upstreamFilterCount is the number of upstream filters that have been processed.
 		// This is used to determine if the request is a retry request.
 		upstreamFilterCount int
+		credentialHeadersMu sync.RWMutex
+		credentialHeaders   map[string]struct{}
 		// localReplyEmitted records that the gateway answered the request itself with an
 		// ImmediateResponse. Envoy sends that local reply back through the response path,
 		// where it would otherwise be handled as if it came from the upstream.
@@ -130,6 +133,7 @@ type (
 		aiServiceBackendName     string
 		routeName                string
 		handler                  filterapi.BackendAuthHandler
+		externalCredential       bool
 		// unsupportedBackendErr is set by SetBackend and answered as a 422 in ProcessRequestHeaders.
 		unsupportedBackendErr error
 		// cost is the cost of the request that is accumulated during the processing of the response.
@@ -138,6 +142,41 @@ type (
 		metrics metrics.Metrics
 	}
 )
+
+// sensitiveHeaders retains credential header identities across attempts. Values
+// stay in the outgoing mutation, never in the request's observation inputs.
+func (r *routerProcessor[ReqT, RespT, RespChunkT, EndpointSpecT]) sensitiveHeaders() []string {
+	r.credentialHeadersMu.RLock()
+	defer r.credentialHeadersMu.RUnlock()
+	keys := append([]string(nil), sensitiveHeaderKeys...)
+	for key := range r.credentialHeaders {
+		keys = append(keys, key)
+	}
+	return keys
+}
+
+func (u *upstreamProcessor[ReqT, RespT, RespChunkT, EndpointSpecT]) sensitiveHeaders() []string {
+	if u.parent == nil {
+		return sensitiveHeaderKeys
+	}
+	return u.parent.sensitiveHeaders()
+}
+
+func (u *upstreamProcessor[ReqT, RespT, RespChunkT, EndpointSpecT]) protectCredentialHeaders(headers []internalapi.Header) {
+	u.parent.credentialHeadersMu.Lock()
+	defer u.parent.credentialHeadersMu.Unlock()
+	if u.parent.credentialHeaders == nil {
+		u.parent.credentialHeaders = make(map[string]struct{})
+	}
+	for _, header := range headers {
+		u.parent.credentialHeaders[strings.ToLower(header.Key())] = struct{}{}
+		for key := range u.requestHeaders {
+			if strings.EqualFold(key, header.Key()) {
+				delete(u.requestHeaders, key)
+			}
+		}
+	}
+}
 
 func newRouterProcessor[ReqT, RespT, RespChunkT any, EndpointSpecT endpointspec.Spec[ReqT, RespT, RespChunkT]](
 	config *filterapi.RuntimeConfig,
@@ -435,6 +474,9 @@ func (u *upstreamProcessor[ReqT, RespT, RespChunkT, EndpointSpecT]) ProcessReque
 				return u.respondLocally(ctx, 401, "Unauthorized", "missing upstream credential"), nil
 			}
 			return nil, fmt.Errorf("failed to do auth request: %w", err)
+		}
+		if u.externalCredential {
+			u.protectCredentialHeaders(hdrs)
 		}
 		for _, h := range hdrs {
 			headerMutation.SetHeaders = append(headerMutation.SetHeaders, &corev3.HeaderValueOption{
@@ -757,6 +799,7 @@ func (u *upstreamProcessor[ReqT, RespT, RespChunkT, EndpointSpecT]) SetBackend(c
 	)
 	u.routeName = routeName
 	u.handler = backend.Handler
+	u.externalCredential = backend.Backend.Auth != nil && backend.Backend.Auth.ExternalCredential != ""
 	u.headerMutator = headermutator.NewHeaderMutator(backend.Backend.HeaderMutation, rp.requestHeaders)
 	u.bodyMutator = bodymutator.NewBodyMutator(backend.Backend.BodyMutation, rp.originalRequestBodyRaw)
 	// Header-derived labels/CEL must be able to see the overridden request model.

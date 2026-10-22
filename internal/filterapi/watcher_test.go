@@ -50,7 +50,7 @@ func newTestLoggerWithBuffer() (*slog.Logger, internaltesting.OutBuffer) {
 	return logger, buf
 }
 
-func TestStartConfigBundleWatcher(t *testing.T) {
+func TestRunConfigBundleWatcher(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		tmpdir := t.TempDir()
 		bundleDir := filepath.Join(tmpdir, "bundle")
@@ -74,8 +74,22 @@ func TestStartConfigBundleWatcher(t *testing.T) {
 
 		writeBundle("version: dev\nbackends:\n- name: first\n")
 		logger, buf := newTestLoggerWithBuffer()
-		err := StartConfigBundleWatcher(t.Context(), bundleDir, rcv, logger, tickInterval)
-		require.NoError(t, err)
+		ctx, cancel := context.WithCancel(t.Context())
+		started := make(chan struct{})
+		done := make(chan error, 1)
+		go func() {
+			done <- RunConfigBundleWatcher(ctx, bundleDir, rcv, logger, tickInterval, func() { close(started) })
+		}()
+		defer func() {
+			cancel()
+			require.NoError(t, <-done)
+		}()
+		synctest.Wait()
+		select {
+		case <-started:
+		default:
+			t.Fatal("watcher did not signal startup")
+		}
 
 		require.Eventually(t, func() bool {
 			cfg := rcv.getConfig()
@@ -101,9 +115,9 @@ func TestStartConfigBundleWatcher(t *testing.T) {
 // requireAtomicWriteFile creates a temporary file, writes the data to it, and then renames it to the final filename.
 // This is an alternative to os.WriteFile but in a way that ensures the write is atomic.
 func requireAtomicWriteFile(t *testing.T, tickInterval time.Duration, filename string, data []byte, perm os.FileMode) {
-	// Sleep enough to ensure that the new file has a different modification time.
-	// In practice, when the extproc is deployed, it will read from the k8s secret,
-	// hence the file will have a different modification time (due to the delay caused by Kubernetes secret updates).
+	// Advance the synctest clock, then explicitly stamp that time on the file.
+	// Sleeping in a synctest bubble does not advance the filesystem clock;
+	// relying on write mtimes makes rapid replacements nondeterministic.
 	time.Sleep(2 * tickInterval)
 
 	tempFile, err := os.CreateTemp(t.TempDir(), filepath.Base(filename)+".tmp.*")
@@ -115,6 +129,8 @@ func requireAtomicWriteFile(t *testing.T, tickInterval time.Duration, filename s
 	require.NoError(t, err, "failed to set permissions on temporary file")
 	err = tempFile.Close()
 	require.NoError(t, err, "failed to close temporary file")
+	stamp := time.Now()
+	require.NoError(t, os.Chtimes(tempName, stamp, stamp), "failed to set deterministic modification time")
 	err = os.Rename(tempName, filename)
 	require.NoError(t, err, "failed to rename temporary file to final destination")
 }

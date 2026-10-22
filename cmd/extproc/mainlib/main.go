@@ -18,6 +18,7 @@ import (
 	"os"
 	"path"
 	"strings"
+	"sync"
 	"time"
 
 	extprocv3 "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
@@ -91,6 +92,10 @@ func setOptionalString(dst **string) func(string) error {
 
 // parseAndValidateFlags parses and validates the flags passed to the external processor.
 func parseAndValidateFlags(args []string) (extProcFlags, error) {
+	return parseAndValidateFlagsWithOptions(args, Options{})
+}
+
+func parseAndValidateFlagsWithOptions(args []string, opts Options) (extProcFlags, error) {
 	var (
 		flags extProcFlags
 		errs  []error
@@ -167,8 +172,17 @@ func parseAndValidateFlags(args []string) (extProcFlags, error) {
 		return extProcFlags{}, fmt.Errorf("failed to parse extProcFlags: %w", err)
 	}
 
-	if flags.configBundlePath == "" {
-		errs = append(errs, fmt.Errorf("configBundlePath must be provided"))
+	if opts.ConfigWatcherFactory == nil {
+		if flags.configBundlePath == "" {
+			errs = append(errs, fmt.Errorf("configBundlePath must be provided"))
+		}
+	} else {
+		if flags.configBundlePath != "" {
+			errs = append(errs, fmt.Errorf("configBundlePath cannot be combined with a custom configuration watcher"))
+		}
+		if opts.MaxConfigBytes <= 0 {
+			errs = append(errs, fmt.Errorf("MaxConfigBytes must be positive for a custom configuration watcher"))
+		}
 	}
 	if err := flags.logLevel.UnmarshalText([]byte(*logLevelPtr)); err != nil {
 		errs = append(errs, fmt.Errorf("failed to unmarshal log level: %w", err))
@@ -214,19 +228,34 @@ func parseAndValidateFlags(args []string) (extProcFlags, error) {
 //
 // This returns an error if the external processor fails to start, or nil otherwise. When the `ctx` is canceled,
 // the function will return nil.
-func Main(ctx context.Context, args []string, stderr io.Writer) (err error) {
+func Main(ctx context.Context, args []string, stderr io.Writer) error {
+	return MainWithOptions(ctx, args, stderr, Options{})
+}
+
+// MainWithOptions runs extproc with optional custom configuration watchers.
+// Custom watchers must initialize every enabled consumer before traffic is
+// served. A nil factory preserves Main's bundle-watcher behavior.
+func MainWithOptions(ctx context.Context, args []string, stderr io.Writer, opts Options) (err error) {
+	callerCtx := ctx
+	ctx, cancel := context.WithCancelCause(ctx)
 	defer func() {
+		if cause := context.Cause(ctx); errors.Is(cause, errConfigWatcherStopped) {
+			err = cause
+			return
+		}
 		// Don't err the caller about normal shutdown scenarios.
-		if errors.Is(err, context.Canceled) || errors.Is(err, grpc.ErrServerStopped) {
+		if callerCtx.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, grpc.ErrServerStopped)) {
 			err = nil
 		}
 	}()
-	flags, err := parseAndValidateFlags(args)
+	defer cancel(nil)
+	flags, err := parseAndValidateFlagsWithOptions(args, opts)
 	if err != nil {
 		return fmt.Errorf("failed to parse and validate extProcFlags: %w", err)
 	}
 
 	l := slog.New(newLogHandler(stderr, flags.logLevel, flags.logFormat))
+	watcherFactory := resolveConfigSubscriptionFactory(ctx, opts, flags.configBundlePath, l)
 
 	l.Info("starting external processor",
 		slog.String("version", version.Parse()),
@@ -239,6 +268,7 @@ func Main(ctx context.Context, args []string, stderr io.Writer) (err error) {
 	if err != nil {
 		return err
 	}
+	defer extProcLis.Close()
 	if network == "unix" {
 		// Change the permission of the UDS to 0775 so that the envoy process (the same group) can access it.
 		err = os.Chmod(address, 0o775)
@@ -252,6 +282,7 @@ func Main(ctx context.Context, args []string, stderr io.Writer) (err error) {
 		return err
 	}
 
+	defer adminLis.Close()
 	var mcpLis net.Listener
 	if flags.mcpAddr != "" {
 		mcpNetwork, mcpAddress := listenAddress(flags.mcpAddr)
@@ -259,6 +290,7 @@ func Main(ctx context.Context, args []string, stderr io.Writer) (err error) {
 		if err != nil {
 			return err
 		}
+		defer mcpLis.Close()
 		if mcpNetwork == "unix" {
 			// Change the permission of the UDS to 0775 so that the envoy process (the same group) can access it.
 			err = os.Chmod(mcpAddress, 0o775)
@@ -289,6 +321,28 @@ func Main(ctx context.Context, args []string, stderr io.Writer) (err error) {
 	if err != nil {
 		return err
 	}
+
+	var metricsShutdown func(context.Context) error
+	var telemetryShutdownOnce sync.Once
+	shutdownTelemetry := func(shutdownCtx context.Context) {
+		telemetryShutdownOnce.Do(func() {
+			if shutdownErr := tracing.Shutdown(shutdownCtx); shutdownErr != nil {
+				l.Error("Failed to shutdown tracing gracefully", "error", shutdownErr)
+			}
+			if metricsShutdown != nil {
+				if shutdownErr := metricsShutdown(shutdownCtx); shutdownErr != nil {
+					l.Error("Failed to shutdown metrics gracefully", "error", shutdownErr)
+				}
+			}
+		})
+	}
+	// Cover startup failures before the server shutdown goroutine exists. Normal
+	// shutdown calls this first with the shared server cleanup deadline below.
+	defer func() {
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer shutdownCancel()
+		shutdownTelemetry(shutdownCtx)
+	}()
 
 	// Create Prometheus registry and reader which automatically converts
 	// attribute to Prometheus-compatible format (e.g. dots to underscores).
@@ -322,7 +376,7 @@ func Main(ctx context.Context, args []string, stderr io.Writer) (err error) {
 
 	extproc.LogRequestHeaderAttributes = logRequestHeaderAttributes
 
-	server, err := extproc.NewServer(l, flags.enableRedaction)
+	server, err := extproc.NewServerWithOptions(l, flags.enableRedaction, extproc.ServerOptions{CredentialResolver: opts.CredentialResolver})
 	if err != nil {
 		return fmt.Errorf("failed to create external processor server: %w", err)
 	}
@@ -360,10 +414,26 @@ func Main(ctx context.Context, args []string, stderr io.Writer) (err error) {
 	server.Register(path.Join(flags.rootPrefix, endpointPrefixes.Anthropic, "/v1/messages/count_tokens"), extproc.NewFactory(
 		countTokensMetricsFactory, tracing.CountTokensTracer(), endpointspec.MessagesCountTokensEndpointSpec{}))
 
-	// Create and register gRPC server with ExternalProcessorServer (the service Envoy calls).
-	if err = filterapi.StartConfigBundleWatcher(ctx, flags.configBundlePath, server, l, time.Second*5); err != nil {
-		return fmt.Errorf("failed to start config watcher: %w", err)
-	}
+	// MainWithOptions owns server construction and therefore explicitly registers
+	// the configuration consumers enabled in this process. The LLM server above
+	// is always present; optional consumers are appended after their construction.
+	// This list describes consumers, not configuration sources or connections.
+	//
+	// ConfigWatcherFactory lets downstream applications replace how configuration
+	// reaches these consumers. It does not register new servers or enable them.
+	// Each registration pairs a query scope (target) with the existing loader
+	// (receiver) and, when needed, validation for custom-source snapshots (validate).
+	// The target lets the factory select configuration for that consumer; it does
+	// not select a transport. File subscriptions retain their loader semantics.
+	//
+	// To add a built-in consumer, construct it here and append its registration,
+	// including any scoped snapshot validation, before calling startConfigWatchers.
+	// The supervisor manages startup, cancellation and joining for every entry
+	// without branching on consumer identity. Each subscription independently
+	// acknowledges updates; acceptance by one consumer cannot acknowledge another.
+	// Exposing arbitrary downstream consumers would require a separate public API
+	// for their construction and lifecycle, beyond the delivery extension point.
+	receivers := []configReceiver{{target: ConfigTargetLLM, receiver: server}}
 
 	var mcpServer *http.Server
 	if mcpLis != nil {
@@ -392,15 +462,24 @@ func Main(ctx context.Context, args []string, stderr io.Writer) (err error) {
 		if err != nil {
 			return fmt.Errorf("failed to create MCP proxy: %w", err)
 		}
-		if err = filterapi.StartConfigBundleWatcher(ctx, flags.configBundlePath, mcpProxyConfig, l, time.Second*5); err != nil {
-			return fmt.Errorf("failed to start config watcher: %w", err)
-		}
+		receivers = append(receivers, configReceiver{
+			target: ConfigTargetMCP, receiver: mcpProxyConfig, validate: validateMCPConfig,
+		})
 
 		mcpServer = &http.Server{
 			Handler:           mcpProxyMux,
 			ReadHeaderTimeout: 120 * time.Second,
 			WriteTimeout:      flags.mcpWriteTimeout,
 		}
+		defer mcpServer.Close()
+	}
+
+	stop, startErr := startConfigWatchers(ctx, cancel, watcherFactory, receivers)
+	if startErr != nil {
+		return startErr
+	}
+	defer func() { cancel(nil); stop() }()
+	if mcpServer != nil {
 		go func() {
 			l.Info("Starting mcp proxy", "addr", mcpLis.Addr())
 			if err2 := mcpServer.Serve(mcpLis); err2 != nil && !errors.Is(err2, http.ErrServerClosed) {
@@ -424,11 +503,16 @@ func Main(ctx context.Context, args []string, stderr io.Writer) (err error) {
 
 	// Start HTTP admin server for metrics and health checks.
 	adminServer := startAdminServer(adminLis, l, promRegistry, healthClient)
+	defer adminServer.Close()
 
+	shutdownDone := make(chan struct{})
+	defer func() { cancel(nil); <-shutdownDone }()
 	go func() {
+		defer close(shutdownDone)
 		<-ctx.Done()
+		// Preserve the existing drain policy: active RPCs finish before the
+		// cleanup timeout starts. A configuration transport must not shorten it.
 		s.GracefulStop()
-
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := healthCheckConn.Close(); err != nil {
@@ -437,12 +521,7 @@ func Main(ctx context.Context, args []string, stderr io.Writer) (err error) {
 		if err := adminServer.Shutdown(shutdownCtx); err != nil {
 			l.Error("Failed to shutdown admin server gracefully", "error", err)
 		}
-		if err := tracing.Shutdown(shutdownCtx); err != nil {
-			l.Error("Failed to shutdown tracing gracefully", "error", err)
-		}
-		if err := metricsShutdown(shutdownCtx); err != nil {
-			l.Error("Failed to shutdown metrics gracefully", "error", err)
-		}
+		shutdownTelemetry(shutdownCtx)
 		if mcpServer != nil {
 			if err := mcpServer.Shutdown(shutdownCtx); err != nil {
 				l.Error("Failed to shutdown mcp proxy server gracefully", "error", err)
@@ -456,6 +535,16 @@ func Main(ctx context.Context, args []string, stderr io.Writer) (err error) {
 	// it would be extremely hard to debug issues where the external processor fails to start.
 	fmt.Fprintf(stderr, "AI Gateway External Processor is ready\n")
 	return s.Serve(extProcLis)
+}
+
+// validateMCPConfig prevents a scoped update from acknowledging the MCP loader's
+// absent-section no-op, including falsely satisfying initial readiness. An empty
+// mcpConfig object is a valid replacement that clears the current configuration.
+func validateMCPConfig(cfg *filterapi.Config) error {
+	if cfg.MCPConfig == nil {
+		return errors.New("mcp configuration must include mcpConfig")
+	}
+	return nil
 }
 
 func listen(ctx context.Context, name, network, address string) (net.Listener, error) {

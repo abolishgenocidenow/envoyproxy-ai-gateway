@@ -1,0 +1,92 @@
+name: AGN Integration
+
+on:
+  push:
+    branches: [agn/integration]
+  pull_request:
+    branches: [agn/integration]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agn-integration-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GOWORK: "off"
+  ENVOY_VERSION: "1.39.2"
+  AWS_EC2_METADATA_DISABLED: "true"
+  AWS_SHARED_CREDENTIALS_FILE: /dev/null
+  AWS_CONFIG_FILE: /dev/null
+
+jobs:
+  unit:
+    name: Unit and race (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+        with:
+          go-version-file: go.mod
+      - name: Unit regression
+        run: make test GO_TEST_ARGS='-race -p 1 -count=1 -timeout=5m'
+      - name: Integration boundary vet
+        run: go vet ./cmd/extproc/mainlib ./internal/extproc ./internal/filterapi ./internal/backendauth ./api/runtime
+      - name: External module embedding
+        run: bash tools/check-mainlib-consumer.sh
+
+  dataplane:
+    name: Envoy data plane
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+        with:
+          go-version-file: go.mod
+      - name: LLM fake-provider integration
+        run: make test-data-plane GO_TEST_E2E_ARGS='-count=1 -p 1 -timeout=20m'
+      - name: MCP integration
+        run: make test-data-plane-mcp GO_TEST_E2E_ARGS='-count=1 -p 1 -timeout=20m'
+
+  lint:
+    name: Lint and spelling
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+        with:
+          go-version-file: go.mod
+      - run: make lint spellcheck
+
+  required:
+    name: AGN required
+    runs-on: ubuntu-latest
+    needs: [unit, dataplane, lint]
+    if: always()
+    steps:
+      - name: Require every qualification job
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          results = json.loads(os.environ["RESULTS"])
+          failed = [name for name, job in results.items() if job["result"] != "success"]
+          if failed:
+              raise SystemExit("Qualification did not pass: " + ", ".join(failed))
+          PY

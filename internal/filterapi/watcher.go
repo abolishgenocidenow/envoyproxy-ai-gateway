@@ -34,8 +34,12 @@ type bundleConfigWatcher struct {
 	versionStr string
 }
 
-// StartConfigBundleWatcher starts a watcher for the sharded bundle directory.
-func StartConfigBundleWatcher(ctx context.Context, bundlePath string, rcv ConfigReceiver, l *slog.Logger, tick time.Duration) error {
+// RunConfigBundleWatcher runs the bundle watcher until ctx is canceled. It calls
+// started once after the initial load succeeds or encounters a retryable partial
+// bundle. That signal preserves the file watcher's startup policy; it does not
+// guarantee that a configuration has been applied. Other initial errors return
+// without calling started. The caller owns the goroutine running this function.
+func RunConfigBundleWatcher(ctx context.Context, bundlePath string, rcv ConfigReceiver, l *slog.Logger, tick time.Duration, started func()) error {
 	cw := &bundleConfigWatcher{rcv: rcv, l: l, path: bundlePath, versionStr: version.Parse()}
 
 	if err := cw.loadConfig(ctx); err != nil {
@@ -48,7 +52,8 @@ func StartConfigBundleWatcher(ctx context.Context, bundlePath string, rcv Config
 	}
 
 	l.Info("start watching the config bundle", slog.String("path", bundlePath), slog.String("interval", tick.String()))
-	go cw.watch(ctx, tick)
+	started()
+	cw.watch(ctx, tick)
 	return nil
 }
 

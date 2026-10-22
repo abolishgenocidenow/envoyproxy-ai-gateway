@@ -25,6 +25,7 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/structpb"
 
+	runtimeapi "github.com/envoyproxy/ai-gateway/api/runtime"
 	"github.com/envoyproxy/ai-gateway/internal/backendauth"
 	"github.com/envoyproxy/ai-gateway/internal/filterapi"
 	"github.com/envoyproxy/ai-gateway/internal/internalapi"
@@ -57,20 +58,32 @@ func loggerFromContext(ctx context.Context) *slog.Logger {
 
 // Server implements the external processor server.
 type Server struct {
+	credentialResolver runtimeapi.CredentialResolver
+
 	logger                        *slog.Logger
 	debugLogEnabled               bool
 	enableRedaction               bool
 	config                        *filterapi.RuntimeConfig
+	configMutex                   sync.RWMutex
 	processorFactories            map[string]ProcessorFactory
 	routerProcessorsPerReqID      map[string]Processor
 	routerProcessorsPerReqIDMutex sync.RWMutex
 	uuidFn                        func() string
 }
 
+// ServerOptions contains immutable construction-time runtime extensions.
+type ServerOptions struct{ CredentialResolver runtimeapi.CredentialResolver }
+
 // NewServer creates a new external processor server.
 func NewServer(logger *slog.Logger, enableRedaction bool) (*Server, error) {
+	return NewServerWithOptions(logger, enableRedaction, ServerOptions{})
+}
+
+// NewServerWithOptions creates a server with application-owned extensions.
+func NewServerWithOptions(logger *slog.Logger, enableRedaction bool, opts ServerOptions) (*Server, error) {
 	debugLogEnabled := logger.Enabled(context.Background(), slog.LevelDebug)
 	srv := &Server{
+		credentialResolver:       opts.CredentialResolver,
 		logger:                   logger,
 		debugLogEnabled:          debugLogEnabled,
 		enableRedaction:          enableRedaction,
@@ -81,14 +94,29 @@ func NewServer(logger *slog.Logger, enableRedaction bool) (*Server, error) {
 	return srv, nil
 }
 
-// LoadConfig updates the configuration of the external processor.
+// LoadConfig builds and publishes a complete runtime configuration. Failed
+// builds leave the previous snapshot unchanged. Readers retain their snapshots
+// without holding the publication lock; this does not coordinate route activation.
+// Callers must not mutate config after passing it to LoadConfig.
 func (s *Server) LoadConfig(ctx context.Context, config *filterapi.Config) error {
-	newConfig, err := filterapi.NewRuntimeConfig(ctx, config, backendauth.NewHandler)
+	newConfig, err := filterapi.NewRuntimeConfig(ctx, config, func(ctx context.Context, auth *filterapi.BackendAuth) (filterapi.BackendAuthHandler, error) {
+		return backendauth.NewHandlerWithResolver(ctx, auth, s.credentialResolver)
+	})
 	if err != nil {
 		return fmt.Errorf("cannot create runtime filter config: %w", err)
 	}
-	s.config = newConfig // This is racey, but we don't care.
+	s.configMutex.Lock()
+	s.config = newConfig
+	s.configMutex.Unlock()
 	return nil
+}
+
+// currentConfig returns a fully constructed runtime snapshot. Published snapshots
+// must not be mutated; processors may retain them across subsequent reloads.
+func (s *Server) currentConfig() *filterapi.RuntimeConfig {
+	s.configMutex.RLock()
+	defer s.configMutex.RUnlock()
+	return s.config
 }
 
 // Register a new processor for the given request path.
@@ -117,7 +145,7 @@ func (s *Server) processorForPath(requestHeaders map[string]string, isUpstreamFi
 	if !ok {
 		return nil, fmt.Errorf("%w: %s", errNoProcessor, path)
 	}
-	return newProcessor(s.config, requestHeaders, logger, isUpstreamFilter, s.enableRedaction)
+	return newProcessor(s.currentConfig(), requestHeaders, logger, isUpstreamFilter, s.enableRedaction)
 }
 
 // originalPathHeader is the header used to pass the original path to the processor.
@@ -132,7 +160,7 @@ const internalReqIDHeader = internalapi.EnvoyAIGatewayHeaderPrefix + "internal-r
 func (s *Server) Process(stream extprocv3.ExternalProcessor_ProcessServer) error {
 	ctx := stream.Context()
 	if s.debugLogEnabled {
-		s.logger.Debug("handling a new stream", slog.Any("config_uuid", s.config.UUID))
+		s.logger.Debug("handling a new stream", slog.Any("config_uuid", s.currentConfig().UUID))
 	}
 
 	// The processor will be instantiated when the first message containing the request headers is received.
@@ -256,7 +284,7 @@ func (s *Server) processMsg(ctx context.Context, p Processor, req *extprocv3.Pro
 		requestHdrs := req.GetRequestHeaders().Headers
 		// If DEBUG log level is enabled, filter sensitive headers before logging.
 		if s.debugLogEnabled {
-			filteredHdrs := filterSensitiveHeadersForLogging(requestHdrs, sensitiveHeaderKeys)
+			filteredHdrs := filterSensitiveHeadersForLogging(requestHdrs, processorSensitiveHeaders(p))
 			l.Debug("request headers processing", slog.Any("request_headers", filteredHdrs))
 		}
 		// Thread Envoy dynamic metadata into context so credential override handlers
@@ -302,9 +330,9 @@ func (s *Server) processMsg(ctx context.Context, p Processor, req *extprocv3.Pro
 			var logContent any
 			switch val := resp.Response.(type) {
 			case *extprocv3.ProcessingResponse_RequestHeaders:
-				logContent = redactProcessingResponseRequestHeaders(val, s.logger, sensitiveHeaderKeys, s.enableRedaction)
+				logContent = redactProcessingResponseRequestHeaders(val, s.logger, processorSensitiveHeaders(p), s.enableRedaction)
 			case *extprocv3.ProcessingResponse_ImmediateResponse:
-				logContent = redactImmediateResponse(val, l, sensitiveHeaderKeys)
+				logContent = redactImmediateResponse(val, l, processorSensitiveHeaders(p))
 			}
 			l.Debug("request headers processed", slog.Any("response", logContent))
 		}
@@ -321,12 +349,12 @@ func (s *Server) processMsg(ctx context.Context, p Processor, req *extprocv3.Pro
 		if s.debugLogEnabled && resp != nil && resp.Response != nil {
 			switch val := resp.Response.(type) {
 			case *extprocv3.ProcessingResponse_RequestBody:
-				logContent := redactRequestBodyResponse(val, l, sensitiveHeaderKeys, s.enableRedaction)
+				logContent := redactRequestBodyResponse(val, l, processorSensitiveHeaders(p), s.enableRedaction)
 				l.Debug("request body processed", slog.Any("response", logContent))
 			case *extprocv3.ProcessingResponse_ImmediateResponse:
 				// ImmediateResponse (e.g., for malformed requests) doesn't need request body redaction,
 				// but its header mutation is still filtered.
-				l.Debug("request body processed", slog.Any("response", redactImmediateResponse(val, l, sensitiveHeaderKeys)))
+				l.Debug("request body processed", slog.Any("response", redactImmediateResponse(val, l, processorSensitiveHeaders(p))))
 			}
 		}
 		return resp, nil
@@ -358,9 +386,9 @@ func (s *Server) processMsg(ctx context.Context, p Processor, req *extprocv3.Pro
 			if s.enableRedaction {
 				switch val := resp.Response.(type) {
 				case *extprocv3.ProcessingResponse_ResponseBody:
-					logContent = redactResponseBodyResponseFull(val, l, sensitiveHeaderKeys)
+					logContent = redactResponseBodyResponseFull(val, l, processorSensitiveHeaders(p))
 				case *extprocv3.ProcessingResponse_ImmediateResponse:
-					logContent = redactImmediateResponse(val, l, sensitiveHeaderKeys)
+					logContent = redactImmediateResponse(val, l, processorSensitiveHeaders(p))
 				}
 			} else {
 				logContent = resp
@@ -389,7 +417,7 @@ func (s *Server) setBackend(ctx context.Context, p Processor, internalReqID stri
 	}
 	routeName := resolveRouteName(attributes)
 
-	backend, ok := s.config.Backends[backendName]
+	backend, ok := s.currentConfig().Backends[backendName]
 	if !ok {
 		return status.Errorf(codes.Internal, "unknown backend: %s", backendName)
 	}
@@ -406,6 +434,13 @@ func (s *Server) setBackend(ctx context.Context, p Processor, internalReqID stri
 		return status.Errorf(codes.Internal, "cannot set backend: %v", err)
 	}
 	return nil
+}
+
+func processorSensitiveHeaders(p Processor) []string {
+	if sensitive, ok := p.(interface{ sensitiveHeaders() []string }); ok {
+		return sensitive.sensitiveHeaders()
+	}
+	return sensitiveHeaderKeys
 }
 
 func resolveBackendName(isEndpointPicker bool, attributes *structpb.Struct) (string, error) {
