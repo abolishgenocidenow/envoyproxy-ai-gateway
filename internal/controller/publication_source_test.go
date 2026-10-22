@@ -4,12 +4,14 @@ package controller
 
 import (
 	"context"
+	controllerapi "github.com/envoyproxy/ai-gateway/api/controller"
 	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	kubefake "k8s.io/client-go/kubernetes/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
@@ -61,4 +63,18 @@ func TestPublicationSourcesBoundedAndCancellation(t *testing.T) {
 	cancel()
 	require.ErrorIs(t, reader.record(canceled, &corev1.Secret{}), context.Canceled)
 	require.Empty(t, fresh.objects)
+}
+
+func TestPublicationObservesDirectCredentialReads(t *testing.T) {
+	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: "ns", Name: "rotated", UID: "rotated-uid", ResourceVersion: "9"}, Data: map[string][]byte{"token": []byte("synthetic")}}
+	controller := &GatewayController{client: fake.NewClientBuilder().WithScheme(Scheme).Build(), kube: kubefake.NewClientset(secret), publishConfig: func(context.Context, controllerapi.ConfigPublication) error { return nil }}
+	ctx, sources := publicationContext(t.Context())
+	value, err := controller.getSecretData(ctx, "ns", "rotated", "token")
+	require.NoError(t, err)
+	require.Equal(t, "synthetic", value)
+	refs, err := sources.snapshot()
+	require.NoError(t, err)
+	require.Len(t, refs, 1)
+	require.Equal(t, secret.UID, refs[0].UID)
+	require.Equal(t, "9", refs[0].ResourceVersion)
 }

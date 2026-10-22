@@ -79,7 +79,7 @@ func TestExtProcContainerHash_Drift(t *testing.T) {
 	input := extProcContainerInput{}
 	baseHash := base.extProcContainerHash(input)
 	require.NotEmpty(t, baseHash)
-	require.Equal(t, 20, reflect.TypeOf(extProcBuilder{}).NumField(),
+	require.Equal(t, 21, reflect.TypeOf(extProcBuilder{}).NumField(),
 		"update drift coverage when extProcBuilder fields change")
 
 	// Helper: mutate a copy of the builder, recompute, expect a different hash.
@@ -91,6 +91,11 @@ func TestExtProcContainerHash_Drift(t *testing.T) {
 		})
 	}
 
+	assertDrifts("gatewayPodCustomizer", func() *extProcBuilder {
+		b := newTestBuilder()
+		b.gatewayPodCustomizer = &testPodCustomizer{revision: "application-change"}
+		return b
+	}())
 	assertDrifts("extraEnvVars", func() *extProcBuilder {
 		b := newTestBuilder()
 		b.extraEnvVars = []corev1.EnvVar{{Name: "OTEL_SERVICE_NAME", Value: "ai-gateway"}}

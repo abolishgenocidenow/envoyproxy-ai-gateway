@@ -64,7 +64,8 @@ var Scheme = runtime.NewScheme()
 
 // Options defines the program configurable options that may be passed on the command line.
 type Options struct {
-	PublishConfig controllerapi.ConfigPublisher
+	GatewayPodCustomizer controllerapi.GatewayPodCustomizer
+	PublishConfig        controllerapi.ConfigPublisher
 	// ExtProcLogLevel is the log level for the external processor, e.g., debug, info, warn, or error.
 	ExtProcLogLevel string
 	// ExtProcLogFormat is the log output format for the external processor, "text" or "json".

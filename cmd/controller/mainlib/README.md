@@ -29,3 +29,11 @@ a capacity limit, not a successful million-object serving claim. Workload
 readiness is excluded and must be coordinated separately. Source observations
 do not capture list absence or membership changes; applications must account
 for those semantics when building their authorization model.
+
+`Options.GatewayPodCustomizer` lets an embedding application configure its
+injected binary's mounts and flags after standard pod injection. The hook
+receives the Gateway name and injected container name through the public API;
+it must preserve unrelated pod fields. Its pure per-Gateway revision joins the
+existing workload drift hash. Empty revisions skip customization and preserve
+the old hash, so unrelated Gateways are not rolled. This is admission wiring,
+not credential authorization or generation eligibility.

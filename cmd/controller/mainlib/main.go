@@ -434,6 +434,7 @@ func newZapOpts(logFormat string, level zapcore.LevelEnabler) []zap.Opts {
 // Options adds application behavior while preserving the controller's ownership
 // of reconciliation, leader election, webhook injection and extension serving.
 type Options struct {
+	GatewayPodCustomizer controllerapi.GatewayPodCustomizer
 	// Configure registers application runnables before the manager starts. Each
 	// runnable must declare its own leader-election requirement.
 	Configure func(manager.Manager) error
@@ -522,6 +523,7 @@ func Main(ctx context.Context, args []string, opts Options) error {
 	// Start the controller.
 	return controller.StartControllers(ctx, mgr, k8sConfig, ctrl.Log.WithName("controller"), &controller.Options{
 		PublishConfig:                          opts.PublishConfig,
+		GatewayPodCustomizer:                   opts.GatewayPodCustomizer,
 		EnvoyGatewayNamespace:                  parsedFlags.envoyGatewayNamespace,
 		ExtProcImage:                           parsedFlags.extProcImage,
 		ExtProcImagePullPolicy:                 parsedFlags.extProcImagePullPolicy,

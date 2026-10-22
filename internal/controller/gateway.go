@@ -169,7 +169,7 @@ func (c *GatewayController) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, err
 	}
 
-	input := extProcContainerInput{gatewayConfig: gwConfig, needMCP: len(mcpRoutes.Items) > 0}
+	input := extProcContainerInput{gateway: types.NamespacedName{Namespace: gw.Namespace, Name: gw.Name}, gatewayConfig: gwConfig, needMCP: len(mcpRoutes.Items) > 0}
 	result, err := c.annotateGatewayPods(ctx, pods, deployments, daemonSets, uid,
 		hasEffectiveRoutes, input.needMCP, c.extProcImage(input), c.extProcContainerHash(input))
 	if err != nil {
@@ -1055,6 +1055,11 @@ func (c *GatewayController) getSecretData(ctx context.Context, namespace, name, 
 	secret, err := c.kube.CoreV1().Secrets(namespace).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
 		return "", fmt.Errorf("failed to get secret %s/%s: %w", namespace, name, err)
+	}
+	if c.publishConfig != nil {
+		if err := (publicationClient{c.client}).record(ctx, secret); err != nil {
+			return "", err
+		}
 	}
 	if secret.Data != nil {
 		if value, ok := secret.Data[dataKey]; ok {

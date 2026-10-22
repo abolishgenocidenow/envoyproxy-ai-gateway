@@ -46,7 +46,7 @@ func (c publicationClient) record(ctx context.Context, obj client.Object) error 
 	if err != nil {
 		return err
 	}
-	// Workload health and generated bundle objects are not configuration inputs.
+	// Workload health objects are not configuration inputs.
 	// Their lifetime/readiness is coordinated separately by the embedding app.
 	switch gvk.Kind {
 	case "Pod", "Deployment", "DaemonSet", "ReplicaSet":

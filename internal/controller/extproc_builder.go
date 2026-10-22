@@ -20,8 +20,10 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 
+	controllerapi "github.com/envoyproxy/ai-gateway/api/controller"
 	aigv1b1 "github.com/envoyproxy/ai-gateway/api/v1beta1"
 	"github.com/envoyproxy/ai-gateway/internal/internalapi"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 // extProcConfigHashAnnotationKey stores the desired extproc config hash on
@@ -55,6 +57,7 @@ func newExtProcBuilder(options *Options, extProcAsSideCar bool, logger logr.Logg
 	}
 
 	return &extProcBuilder{
+		gatewayPodCustomizer:                   options.GatewayPodCustomizer,
 		image:                                  options.ExtProcImage,
 		imagePullPolicy:                        options.ExtProcImagePullPolicy,
 		logLevel:                               options.ExtProcLogLevel,
@@ -81,12 +84,13 @@ func newExtProcBuilder(options *Options, extProcAsSideCar bool, logger logr.Logg
 // extProcBuilder holds the controller-global extproc configuration used by both
 // the mutating webhook and the gateway reconciler.
 type extProcBuilder struct {
-	image           string
-	imagePullPolicy corev1.PullPolicy
-	logLevel        string
-	logFormat       string
-	enableRedaction bool
-	udsPath         string
+	gatewayPodCustomizer controllerapi.GatewayPodCustomizer
+	image                string
+	imagePullPolicy      corev1.PullPolicy
+	logLevel             string
+	logFormat            string
+	enableRedaction      bool
+	udsPath              string
 
 	requestHeaderAttributes        *string
 	spanRequestHeaderAttributes    *string
@@ -109,6 +113,7 @@ type extProcBuilder struct {
 
 // extProcContainerInput is the per-gateway input for extproc injection.
 type extProcContainerInput struct {
+	gateway types.NamespacedName
 	// gatewayConfig is the GatewayConfig referenced by the Gateway (nil if none).
 	gatewayConfig *aigv1b1.GatewayConfig
 	// needMCP is true when at least one MCPRoute is attached to the Gateway,
@@ -205,9 +210,10 @@ func (b *extProcBuilder) buildExtProcContainer(input extProcContainerInput) core
 // extProcConfigDigest contains the config inputs that affect extproc injection.
 // It intentionally avoids hashing the full Kubernetes Container API object.
 type extProcConfigDigest struct {
-	Image           string
-	ImagePullPolicy corev1.PullPolicy
-	LogLevel        string
+	ApplicationRevision string `json:",omitempty"`
+	Image               string
+	ImagePullPolicy     corev1.PullPolicy
+	LogLevel            string
 	// LogFormat is omitted when it is the default, so deployments that never asked for JSON keep
 	// the same hash as before this field existed and are not rolled on upgrade.
 	LogFormat                              string `json:",omitempty"`
@@ -256,6 +262,9 @@ func (b *extProcBuilder) extProcContainerHash(input extProcContainerInput) strin
 		MCPFallbackSessionEncryptionIterations: b.mcpFallbackSessionEncryptionIterations,
 		NeedMCP:                                input.needMCP,
 		GatewayConfigExtProc:                   extProcSpecFromInput(input),
+	}
+	if b.gatewayPodCustomizer != nil {
+		digest.ApplicationRevision = b.gatewayPodCustomizer.Revision(input.gateway)
 	}
 	marshaled, _ := stdjson.Marshal(digest)
 	sum := sha256.Sum256(marshaled)

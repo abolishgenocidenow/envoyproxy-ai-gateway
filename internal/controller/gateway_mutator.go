@@ -11,12 +11,14 @@ import (
 	"path/filepath"
 	"strings"
 
+	controllerapi "github.com/envoyproxy/ai-gateway/api/controller"
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	gwapiv1 "sigs.k8s.io/gateway-api/apis/v1"
@@ -331,7 +333,7 @@ func (g *gatewayMutator) mutatePod(ctx context.Context, pod *corev1.Pod, gateway
 	// (-configBundlePath and its volumeMount) are
 	// added below, since they depend on which filter-config secrets exist at pod
 	// creation time and must stay out of the drift hash.
-	input := extProcContainerInput{gatewayConfig: gatewayConfig, needMCP: len(mcpRoutes.Items) > 0}
+	input := extProcContainerInput{gateway: types.NamespacedName{Namespace: gatewayNamespace, Name: gatewayName}, gatewayConfig: gatewayConfig, needMCP: len(mcpRoutes.Items) > 0}
 	container := g.buildExtProcContainer(input)
 
 	container.Args = append([]string{"-configBundlePath", filterConfigBundleMountPath}, container.Args...)
@@ -358,6 +360,9 @@ func (g *gatewayMutator) mutatePod(ctx context.Context, pod *corev1.Pod, gateway
 				ReadOnly:  false,
 			})
 		}
+	}
+	if g.gatewayPodCustomizer != nil && g.gatewayPodCustomizer.Revision(input.gateway) != "" {
+		return g.gatewayPodCustomizer.Customize(ctx, controllerapi.GatewayPod{Gateway: input.gateway, Pod: pod, ContainerName: extProcContainerName})
 	}
 	return nil
 }
