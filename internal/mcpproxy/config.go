@@ -17,6 +17,7 @@ import (
 	"sync"
 
 	"github.com/envoyproxy/ai-gateway/internal/filterapi"
+	"github.com/envoyproxy/ai-gateway/internal/json"
 	"github.com/envoyproxy/ai-gateway/internal/tracing/tracingapi"
 )
 
@@ -24,6 +25,7 @@ type (
 	// ProxyConfig holds the main MCP proxy configuration.
 	// This implements [filterapi.ConfigReceiver] to gets the up-to-date configuration.
 	ProxyConfig struct {
+		configMu sync.RWMutex
 		*mcpProxyConfig
 		toolChangeSignaler         changeSignaler // signals tool changes to active sessions.
 		l                          *slog.Logger
@@ -259,6 +261,17 @@ func (p *ProxyConfig) LoadConfig(_ context.Context, config *filterapi.Config) er
 		return nil
 	}
 
+	// Own all slices/maps supplied by the caller before compiling or publishing.
+	encoded, err := json.Marshal(mcpConfig)
+	if err != nil {
+		return fmt.Errorf("cannot copy MCP configuration: %w", err)
+	}
+	mcpConfig = &filterapi.MCPConfig{}
+	if err = json.Unmarshal(encoded, mcpConfig); err != nil {
+		return fmt.Errorf("cannot copy MCP configuration: %w", err)
+	}
+	p.configMu.Lock()
+	defer p.configMu.Unlock()
 	// Talk to the backend MCP listener on the local Envoy instance.
 	newConfig.backendListenerAddr = mcpConfig.BackendListenerAddr
 
@@ -346,7 +359,7 @@ func (p *ProxyConfig) LoadConfig(_ context.Context, config *filterapi.Config) er
 	}
 
 	toolsChanged := !p.sameTools(newConfig)
-	p.mcpProxyConfig = newConfig // This is racy, but we don't care.
+	p.mcpProxyConfig = newConfig
 	if toolsChanged {
 		p.toolChangeSignaler.Signal()
 	}
@@ -376,4 +389,11 @@ func (m *multiWatcherSignaler) Signal() {
 	defer m.mu.Unlock()
 	close(m.notify)                // Wake everyone
 	m.notify = make(chan struct{}) // Create a new channel for future updates
+}
+
+// snapshot retains one compiled generation for the lifetime of an HTTP operation.
+func (p *ProxyConfig) snapshot() *ProxyConfig {
+	p.configMu.RLock()
+	defer p.configMu.RUnlock()
+	return &ProxyConfig{mcpProxyConfig: p.mcpProxyConfig, toolChangeSignaler: p.toolChangeSignaler, l: p.l, sessionCrypto: p.sessionCrypto, tracer: p.tracer, client: p.client, logRequestHeaderAttributes: p.logRequestHeaderAttributes, maxRequestBodySize: p.maxRequestBodySize}
 }

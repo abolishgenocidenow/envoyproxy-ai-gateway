@@ -24,6 +24,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/envoyproxy/ai-gateway/execution"
 	"github.com/envoyproxy/ai-gateway/internal/filterapi"
 	"github.com/envoyproxy/ai-gateway/internal/internalapi"
 	"github.com/envoyproxy/ai-gateway/internal/json"
@@ -66,15 +67,31 @@ func getMaxRequestBodySize() int64 {
 
 // NewMCPProxy creates a new MCPProxy instance.
 func NewMCPProxy(l *slog.Logger, mcpMetrics metrics.MCPMetrics, tracer tracingapi.MCPTracer, sessionCrypto SessionCrypto, logRequestHeaderAttributes map[string]string) (*ProxyConfig, *http.ServeMux, error) {
+	return NewHandler(l, mcpMetrics, tracer, sessionCrypto, logRequestHeaderAttributes, HandlerOptions{MaxRequestBodySize: getMaxRequestBodySize()})
+}
+
+// Selection is trusted host context. It never comes from an unverified client header.
+type Selection = execution.Metadata
+
+// HandlerOptions supplies host dependencies without owning listeners or discovery.
+type HandlerOptions struct {
+	Client             http.Client
+	MaxRequestBodySize int64
+	Select             func(*http.Request) (Selection, error)
+}
+
+// NewHandler creates the shared MCP HTTP execution engine.
+func NewHandler(l *slog.Logger, mcpMetrics metrics.MCPMetrics, tracer tracingapi.MCPTracer, sessionCrypto SessionCrypto, logRequestHeaderAttributes map[string]string, options HandlerOptions) (*ProxyConfig, *http.ServeMux, error) {
 	toolChangeSignaler := newMultiWatcherSignaler() // used to signal changes to all active sessions.
 	cfg := &ProxyConfig{
 		toolChangeSignaler:         toolChangeSignaler,
 		tracer:                     tracer,
 		sessionCrypto:              sessionCrypto,
 		l:                          l,
-		client:                     http.Client{}, // No timeout as it's enforced at Envoy level.
+		client:                     options.Client,
 		logRequestHeaderAttributes: maps.Clone(logRequestHeaderAttributes),
-		maxRequestBodySize:         getMaxRequestBodySize(),
+		maxRequestBodySize:         options.MaxRequestBodySize,
+		mcpProxyConfig:             &mcpProxyConfig{routes: map[filterapi.MCPRouteName]*mcpProxyConfigRoute{}},
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc(
@@ -84,9 +101,52 @@ func NewMCPProxy(l *slog.Logger, mcpMetrics metrics.MCPMetrics, tracer tracingap
 		// For example, if we mistakenly set /mcp here, only the route with prefix /mcp will be matched, and other routes
 		// with different prefixes will not be matched, which is not desired.
 		"/", func(w http.ResponseWriter, r *http.Request) {
+			captured := cfg.snapshot()
+			if options.Select != nil {
+				r = r.Clone(r.Context())
+				for key := range r.Header {
+					if strings.HasPrefix(strings.ToLower(key), internalapi.EnvoyAIGatewayHeaderPrefix) {
+						r.Header.Del(key)
+					}
+				}
+				selected, err := options.Select(r)
+				if err != nil {
+					http.Error(w, "request selection rejected", http.StatusUnauthorized)
+					return
+				}
+				selected = selected.Clone()
+				captured.client.Transport = &metadataTransport{base: captured.client.Transport, metadata: selected}
+				route := captured.routes[selected.Route]
+				if route == nil {
+					http.Error(w, "unknown route", http.StatusNotFound)
+					return
+				}
+				if ((route.authorization != nil && route.authorization.VerifiedJWT) || (route.backendSelector != nil && route.backendSelector.VerifiedJWT)) && !selected.VerifiedJWT {
+					http.Error(w, "verified identity required", http.StatusUnauthorized)
+					return
+				}
+				if id := r.Header.Get(sessionIDHeader); id != "" {
+					plain, decryptErr := captured.sessionCrypto.Decrypt(id)
+					if decryptErr != nil {
+						http.Error(w, "invalid session ID", http.StatusBadRequest)
+						return
+					}
+					_, sessionRoute, _, parseErr := clientToGatewaySessionID(plain).backendSessionIDs()
+					if parseErr != nil {
+						http.Error(w, "invalid session ID", http.StatusBadRequest)
+						return
+					}
+					if sessionRoute != selected.Route {
+						http.Error(w, "session route mismatch", http.StatusForbidden)
+						return
+					}
+				}
+				r.Header.Set(internalapi.MCPRouteHeader, selected.Route)
+				r.Header.Set(internalapi.MCPSubjectHeader, selected.Subject)
+			}
 			proxy := &mcpRequestContext{
 				metrics:        mcpMetrics.WithRequestAttributes(r),
-				ProxyConfig:    cfg,
+				ProxyConfig:    captured,
 				requestHeaders: r.Header,
 				originalPath:   originalPathForRequest(r),
 			}
@@ -716,4 +776,19 @@ func mustJSONRPCRequestID() jsonrpc.ID {
 func ensureHTTPConnectionReused(resp *http.Response) {
 	_, _ = io.Copy(io.Discard, resp.Body)
 	_ = resp.Body.Close()
+}
+
+// metadataTransport propagates trusted input even on session cleanup requests,
+// whose lifetime is independent of the downstream request context.
+type metadataTransport struct {
+	base     http.RoundTripper
+	metadata execution.Metadata
+}
+
+func (t *metadataTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	base := t.base
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	return base.RoundTrip(r.WithContext(execution.WithMetadata(r.Context(), t.metadata)))
 }

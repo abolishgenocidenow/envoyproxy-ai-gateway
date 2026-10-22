@@ -41,6 +41,8 @@ jobs:
         run: make test GO_TEST_ARGS='-race -p 1 -count=1 -timeout=5m'
       - name: Integration boundary vet
         run: go vet ./cmd/extproc/mainlib ./internal/extproc ./internal/filterapi ./internal/backendauth ./api/runtime
+      - name: Execution libraries and adapter parity
+        run: bash tools/verify-execution-library.sh -race -p 1 -count=1 -timeout=5m
       - name: External module embedding
         run: bash tools/check-mainlib-consumer.sh
 

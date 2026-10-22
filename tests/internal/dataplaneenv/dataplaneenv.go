@@ -251,24 +251,30 @@ func requireEnvoy(t testing.TB,
 	// That means the subprocess gets killed before we can send it an interrupt
 	// signal for graceful shutdown, which results in orphaned subprocesses.
 	ctx, cancel := context.WithCancel(context.Background())
-	cmd := testsinternal.GoToolCmdContext(ctx, "func-e", "run",
+	args := []string{
 		"-c", envoyYamlPath,
 		"--concurrency", strconv.Itoa(max(runtime.NumCPU(), 2)),
 		// This allows multiple Envoy instances to run in parallel.
 		"--base-id", strconv.Itoa(time.Now().Nanosecond()),
 		"--component-log-level", "http:warn",
-	)
-	// Point func-e at the same data dir used by aigw so tests reuse the cached Envoy binary.
-	home, err := os.UserHomeDir()
-	require.NoError(t, err)
-	cmd.Env = append(os.Environ(),
-		"FUNC_E_DATA_HOME="+filepath.Join(home, ".local", "share", "aigw"),
-	)
-	// func-e will use the version specified in the project root's .envoy-version file.
+	}
+	var cmd *exec.Cmd
+	if binary := os.Getenv("ENVOY_BIN"); binary != "" {
+		path, err := filepath.Abs(binary)
+		require.NoError(t, err)
+		cmd = exec.CommandContext(ctx, path, args...)
+		t.Logf("Starting explicit Envoy binary %s", path)
+	} else {
+		cmd = testsinternal.GoToolCmdContext(ctx, "func-e", append([]string{"run"}, args...)...)
+		// Point func-e at the same data dir used by aigw.
+		home, err := os.UserHomeDir()
+		require.NoError(t, err)
+		cmd.Env = append(os.Environ(), "FUNC_E_DATA_HOME="+filepath.Join(home, ".local", "share", "aigw"))
+		version, err := os.ReadFile(filepath.Join(internaltesting.FindProjectRoot(), ".envoy-version"))
+		require.NoError(t, err)
+		t.Logf("Starting Envoy version %s", strings.TrimSpace(string(version)))
+	}
 	cmd.Dir = internaltesting.FindProjectRoot()
-	version, err := os.ReadFile(filepath.Join(cmd.Dir, ".envoy-version"))
-	require.NoError(t, err)
-	t.Logf("Starting Envoy version %s", strings.TrimSpace(string(version)))
 	cmd.WaitDelay = 3 * time.Second // auto-kill after 3 seconds.
 	t.Cleanup(func() {
 		defer cancel()

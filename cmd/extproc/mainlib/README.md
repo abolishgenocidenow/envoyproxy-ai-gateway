@@ -133,3 +133,11 @@ remain the adapter's responsibility.
 A production transport also needs appropriate authentication, TLS, redirect
 policy, retry backoff/jitter and diagnostics. Configuration can contain
 credentials: do not log documents, response bodies or unredacted apply errors.
+
+## Host routing and MCP execution
+
+`Options.Routing` replaces ext_proc phase/correlation/selection and routing handoff
+with trusted host callbacks. `Options.MCP` injects the MCP selector, logical backend
+transport and session crypto while mainlib retains server supervision. Nil options
+preserve upstream behavior. See [host composition](../../../docs/design/host-composition.md)
+for generation retention, retry ownership and callback contracts.

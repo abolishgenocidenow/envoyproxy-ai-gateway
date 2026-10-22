@@ -18,6 +18,7 @@ import (
 	runtimeapi "github.com/envoyproxy/ai-gateway/api/runtime"
 	"github.com/envoyproxy/ai-gateway/internal/filterapi"
 	"github.com/envoyproxy/ai-gateway/internal/version"
+	"github.com/envoyproxy/ai-gateway/mcp"
 )
 
 // ConfigTarget identifies a configuration consumer, not which servers to enable.
@@ -68,6 +69,14 @@ type ConfigWatcherFactory func(WatchOptions) (ConfigWatcher, error)
 // Options configures optional extensions to Main. Its zero value preserves the
 // bundle-file watcher, including its startup behavior.
 type Options struct {
+	// MCP supplies a complete host selector, transport and session-crypto set.
+	// Nil preserves the upstream Envoy listener transport and flag-based crypto.
+	// The caller owns these dependencies; mainlib owns its HTTP listener.
+	MCP *mcp.Options
+
+	// Routing replaces the ext_proc header/xDS handoff with trusted host context.
+	Routing runtimeapi.ExtProcRouting
+
 	// CredentialResolver resolves explicit externalCredential backend references
 	// for every upstream authentication attempt. Nil rejects such references.
 	CredentialResolver runtimeapi.CredentialResolver

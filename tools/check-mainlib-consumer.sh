@@ -11,7 +11,7 @@ consumer_dir="$(mktemp -d)"
 trap 'rm -rf "$consumer_dir"' EXIT
 export GOWORK=off
 
-cp "$source_root/cmd/extproc/mainlib/testdata/consumer_test.go" "$consumer_dir/consumer_test.go"
+cp "$source_root"/cmd/extproc/mainlib/testdata/*_test.go "$consumer_dir/"
 cat > "$consumer_dir/go.mod" <<'EOF'
 module example.com/dataplane-mainlib-consumer
 

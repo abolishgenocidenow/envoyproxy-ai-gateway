@@ -1,0 +1,89 @@
+{
+  "request": {
+    "model": "public-model",
+    "messages": [
+      {
+        "role": "user",
+        "content": "hello"
+      }
+    ],
+    "max_tokens": 32,
+    "stream": true,
+    "stream_options": {
+      "include_usage": true
+    },
+    "extra_field": "preserve-me"
+  },
+  "attempts": [
+    {
+      "name": "bedrock",
+      "schema": "AWSAnthropic",
+      "version": "bedrock-2023-05-31",
+      "model": "claude-test",
+      "path": "/model/claude-test/invoke-with-response-stream",
+      "body": {
+        "anthropic_version": "bedrock-2023-05-31",
+        "max_tokens": 32,
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "hello"
+              }
+            ]
+          }
+        ]
+      },
+      "prefix": ""
+    },
+    {
+      "name": "openai",
+      "schema": "OpenAI",
+      "version": "v1",
+      "model": "fallback-model",
+      "path": "/v1/chat/completions",
+      "body": {
+        "model": "fallback-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "hello"
+          }
+        ],
+        "max_tokens": 32,
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "extra_field": "preserve-me"
+      },
+      "prefix": "v1"
+    },
+    {
+      "name": "original",
+      "schema": "OpenAI",
+      "version": "v1",
+      "model": "",
+      "path": "/v1/chat/completions",
+      "body": {
+        "model": "public-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "hello"
+          }
+        ],
+        "max_tokens": 32,
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "extra_field": "preserve-me"
+      },
+      "prefix": "v1"
+    }
+  ],
+  "response": "data: {\"id\":\"fixture\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"served-model\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"fixture\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"served-model\",\"choices\":[],\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":3,\"total_tokens\":10}}\n\ndata: [DONE]\n\n"
+}

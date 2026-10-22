@@ -172,6 +172,11 @@ func parseAndValidateFlagsWithOptions(args []string, opts Options) (extProcFlags
 		return extProcFlags{}, fmt.Errorf("failed to parse extProcFlags: %w", err)
 	}
 
+	if opts.MCP != nil {
+		if flags.mcpAddr == "" || opts.MCP.Select == nil || opts.MCP.Transport == nil || opts.MCP.SessionCrypto == nil || opts.MCP.MaxRequestBodySize < 0 {
+			return extProcFlags{}, errors.New("MCP options require mcpAddr, selector, transport, session crypto and a nonnegative body limit")
+		}
+	}
 	if opts.ConfigWatcherFactory == nil {
 		if flags.configBundlePath == "" {
 			errs = append(errs, fmt.Errorf("configBundlePath must be provided"))
@@ -236,6 +241,10 @@ func Main(ctx context.Context, args []string, stderr io.Writer) error {
 // Custom watchers must initialize every enabled consumer before traffic is
 // served. A nil factory preserves Main's bundle-watcher behavior.
 func MainWithOptions(ctx context.Context, args []string, stderr io.Writer, opts Options) (err error) {
+	if opts.MCP != nil {
+		copied := *opts.MCP
+		opts.MCP = &copied
+	}
 	callerCtx := ctx
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer func() {
@@ -376,7 +385,7 @@ func MainWithOptions(ctx context.Context, args []string, stderr io.Writer, opts 
 
 	extproc.LogRequestHeaderAttributes = logRequestHeaderAttributes
 
-	server, err := extproc.NewServerWithOptions(l, flags.enableRedaction, extproc.ServerOptions{CredentialResolver: opts.CredentialResolver})
+	server, err := extproc.NewServerWithOptions(l, flags.enableRedaction, extproc.ServerOptions{CredentialResolver: opts.CredentialResolver, Routing: opts.Routing})
 	if err != nil {
 		return fmt.Errorf("failed to create external processor server: %w", err)
 	}
@@ -437,7 +446,7 @@ func MainWithOptions(ctx context.Context, args []string, stderr io.Writer, opts 
 
 	var mcpServer *http.Server
 	if mcpLis != nil {
-		if flags.mcpSessionEncryptionSeed == defaultInsecureMCPSessionEncryptionSeed {
+		if opts.MCP == nil && flags.mcpSessionEncryptionSeed == defaultInsecureMCPSessionEncryptionSeed {
 			l.Warn("MCP session encryption seed is set to the well-known default value; " +
 				"this allows anyone who knows this public default to decrypt and forge MCP session IDs " +
 				"(including the anti-hijacking subject embedded in them). Set --mcpSessionEncryptionSeed " +
@@ -457,8 +466,21 @@ func MainWithOptions(ctx context.Context, args []string, stderr io.Writer, opts 
 
 		var mcpProxyMux *http.ServeMux
 		var mcpProxyConfig *mcpproxy.ProxyConfig
-		mcpProxyConfig, mcpProxyMux, err = mcpproxy.NewMCPProxy(l.With("component", "mcp-proxy"), mcpMetrics,
-			tracing.MCPTracer(), mcpSessionCrypto, logRequestHeaderAttributes)
+		if opts.MCP == nil {
+			mcpProxyConfig, mcpProxyMux, err = mcpproxy.NewMCPProxy(l.With("component", "mcp-proxy"), mcpMetrics,
+				tracing.MCPTracer(), mcpSessionCrypto, logRequestHeaderAttributes)
+		} else {
+			host := *opts.MCP
+			limit := host.MaxRequestBodySize
+			if limit == 0 {
+				limit = 4 * 1024 * 1024
+			}
+			mcpProxyConfig, mcpProxyMux, err = mcpproxy.NewHandler(l.With("component", "mcp-proxy"), mcpMetrics,
+				tracing.MCPTracer(), host.SessionCrypto, logRequestHeaderAttributes, mcpproxy.HandlerOptions{
+					Select: host.Select, MaxRequestBodySize: limit,
+					Client: http.Client{Transport: mcpproxy.NewBackendTransport(ctx, host.Transport), CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }},
+				})
+		}
 		if err != nil {
 			return fmt.Errorf("failed to create MCP proxy: %w", err)
 		}
