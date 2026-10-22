@@ -61,6 +61,9 @@ func NewGatewayController(
 	if uf == nil {
 		uf = uuid.NewString
 	}
+	if options.PublishConfig != nil {
+		client = publicationClient{client}
+	}
 	return &GatewayController{
 		publishConfig:           options.PublishConfig,
 		client:                  client,
@@ -94,6 +97,9 @@ type GatewayController struct {
 
 // Reconcile implements the reconcile.Reconciler for gwapiv1.Gateway.
 func (c *GatewayController) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	if c.publishConfig != nil {
+		ctx, _ = publicationContext(ctx)
+	}
 	gw := &gwapiv1.Gateway{}
 	if err := c.client.Get(ctx, req.NamespacedName, gw); err != nil {
 		if apierrors.IsNotFound(err) {
@@ -407,6 +413,11 @@ func (c *GatewayController) reconcileFilterConfigSecret(
 	declaredMetadataNamespaces []string,
 ) (hasEffectiveRoute bool, _ error) {
 	// Precondition: aiGatewayRoutes is not empty as we early return if it is empty.
+	var sources *publicationSources
+	var authorizations []controllerapi.BackendAuthorization
+	if c.publishConfig != nil {
+		ctx, sources = publicationContext(ctx)
+	}
 	ec := &filterapi.Config{UUID: uuid, Version: version.Parse()}
 	var err error
 
@@ -569,6 +580,13 @@ func (c *GatewayController) reconcileFilterConfigSecret(
 							"aigatewayroute", aiGatewayRoute.Name, "namespace", aiGatewayRoute.Namespace)
 						continue
 					}
+					if c.publishConfig != nil {
+						authorizations = append(authorizations, controllerapi.BackendAuthorization{
+							RuntimeBackend: b.Name,
+							Route:          corev1.ObjectReference{APIVersion: "aigateway.envoyproxy.io/v1beta1", Kind: "AIGatewayRoute", Namespace: aiGatewayRoute.Namespace, Name: aiGatewayRoute.Name, UID: aiGatewayRoute.UID, ResourceVersion: aiGatewayRoute.ResourceVersion},
+							Policy:         corev1.ObjectReference{APIVersion: "aigateway.envoyproxy.io/v1beta1", Kind: "BackendSecurityPolicy", Namespace: bsp.Namespace, Name: bsp.Name, UID: bsp.UID, ResourceVersion: bsp.ResourceVersion},
+						})
+					}
 					stripCredentialOverrideInputHeaders(&b)
 				}
 
@@ -628,7 +646,12 @@ func (c *GatewayController) reconcileFilterConfigSecret(
 		if err != nil {
 			return false, fmt.Errorf("failed to encode publication: %w", err)
 		}
+		refs, err := sources.snapshot()
+		if err != nil {
+			return false, err
+		}
 		if err := c.publishConfig(ctx, controllerapi.ConfigPublication{
+			Sources: refs, Authorizations: authorizations,
 			Gateway: types.NamespacedName{Namespace: gatewayNamespace, Name: gatewayName}, JSON: document,
 		}); err != nil {
 			return false, fmt.Errorf("failed to publish application config: %w", err)

@@ -18,3 +18,14 @@ credentials and must not be logged.
 This hook is not an authoritative freshness grant, workload assignment, route
 activation or credential authorization API. Those guarantees belong to the
 embedding application and must not be inferred from successful publication.
+
+The callback includes source object UID/resourceVersion observations and the
+route/policy provenance of serialized backend authorizations. Applications can
+validate these against the direct Kubernetes API without importing controller
+internals or deriving identity from credential bytes. Mixed versions of an
+object within one reconciliation are rejected. Observations are deduplicated
+and capped at 100,000 objects; exceeding the cap rejects publication. This is
+a capacity limit, not a successful million-object serving claim. Workload
+readiness is excluded and must be coordinated separately. Source observations
+do not capture list absence or membership changes; applications must account
+for those semantics when building their authorization model.

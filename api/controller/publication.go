@@ -5,17 +5,31 @@ package controller
 
 import (
 	"context"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 )
 
+// BackendAuthorization relates a serialized runtime backend to its policy and
+// route. The application can resolve the policy's credential references without
+// depending on internal naming functions or inferring identity from key bytes.
+type BackendAuthorization struct {
+	RuntimeBackend string
+	Route          corev1.ObjectReference
+	Policy         corev1.ObjectReference
+}
+
 // ConfigPublication is a complete document built by the elected controller.
 // JSON is an isolated copy and may contain credentials. It must not be logged.
-// The cached inputs are not an authoritative credential freshness grant.
-// Gateway names can be reused; applications must resolve and validate the UID
-// against their assignment and authoritative source before granting access.
+// Cached inputs are not authoritative freshness grants. Gateway names can be
+// reused; applications must validate UID and assignment before granting access.
 type ConfigPublication struct {
-	Gateway types.NamespacedName
-	JSON    []byte
+	// Sources records object UID/resourceVersion pairs observed while building.
+	// It is evidence to validate against the authoritative API, not a grant. List
+	// absence and membership semantics still require application-specific checks.
+	Sources        []corev1.ObjectReference
+	Authorizations []BackendAuthorization
+	Gateway        types.NamespacedName
+	JSON           []byte
 }
 
 // ConfigPublisher runs before legacy bundle publication. Returning an error
