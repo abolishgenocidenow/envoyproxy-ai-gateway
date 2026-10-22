@@ -39,6 +39,7 @@ import (
 	gwapiv1a3 "sigs.k8s.io/gateway-api/apis/v1alpha3"
 	gwapiv1b1 "sigs.k8s.io/gateway-api/apis/v1beta1"
 
+	controllerapi "github.com/envoyproxy/ai-gateway/api/controller"
 	aigv1a1 "github.com/envoyproxy/ai-gateway/api/v1alpha1"
 	aigv1b1 "github.com/envoyproxy/ai-gateway/api/v1beta1"
 	"github.com/envoyproxy/ai-gateway/internal/ratelimit/runner"
@@ -63,6 +64,7 @@ var Scheme = runtime.NewScheme()
 
 // Options defines the program configurable options that may be passed on the command line.
 type Options struct {
+	PublishConfig controllerapi.ConfigPublisher
 	// ExtProcLogLevel is the log level for the external processor, e.g., debug, info, warn, or error.
 	ExtProcLogLevel string
 	// ExtProcLogFormat is the log output format for the external processor, "text" or "json".

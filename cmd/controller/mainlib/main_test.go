@@ -3,7 +3,7 @@
 // The full text of the Apache license is available in the LICENSE file at
 // the root of the repo.
 
-package main
+package mainlib
 
 import (
 	"bytes"
@@ -443,4 +443,10 @@ func TestSetupCache(t *testing.T) {
 			"envoy-ai-gateway-system": {},
 		}, c.DefaultNamespaces)
 	})
+}
+
+func TestMainReturnsFlagError(t *testing.T) {
+	// Library callers receive an error instead of terminating their process or
+	// attempting Kubernetes access for invalid arguments.
+	require.ErrorContains(t, Main(t.Context(), []string{"--not-a-controller-option"}, Options{}), "parse and validate")
 }

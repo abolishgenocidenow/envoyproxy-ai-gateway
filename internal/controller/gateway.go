@@ -33,6 +33,7 @@ import (
 	gwapiv1 "sigs.k8s.io/gateway-api/apis/v1"
 	"sigs.k8s.io/yaml"
 
+	controllerapi "github.com/envoyproxy/ai-gateway/api/controller"
 	aigv1a1 "github.com/envoyproxy/ai-gateway/api/v1alpha1"
 	aigv1b1 "github.com/envoyproxy/ai-gateway/api/v1beta1"
 	"github.com/envoyproxy/ai-gateway/internal/controller/rotators"
@@ -61,6 +62,7 @@ func NewGatewayController(
 		uf = uuid.NewString
 	}
 	return &GatewayController{
+		publishConfig:           options.PublishConfig,
 		client:                  client,
 		kube:                    kube,
 		logger:                  logger,
@@ -74,6 +76,7 @@ func NewGatewayController(
 
 // GatewayController implements reconcile.TypedReconciler for gwapiv1.Gateway.
 type GatewayController struct {
+	publishConfig         controllerapi.ConfigPublisher
 	client                client.Client
 	kube                  kubernetes.Interface
 	logger                logr.Logger
@@ -619,6 +622,17 @@ func (c *GatewayController) reconcileFilterConfigSecret(
 	marshaled, err := yaml.Marshal(ec)
 	if err != nil {
 		return false, fmt.Errorf("failed to marshal extproc config: %w", err)
+	}
+	if c.publishConfig != nil {
+		document, err := yaml.YAMLToJSON(marshaled)
+		if err != nil {
+			return false, fmt.Errorf("failed to encode publication: %w", err)
+		}
+		if err := c.publishConfig(ctx, controllerapi.ConfigPublication{
+			Gateway: types.NamespacedName{Namespace: gatewayNamespace, Name: gatewayName}, JSON: document,
+		}); err != nil {
+			return false, fmt.Errorf("failed to publish application config: %w", err)
+		}
 	}
 	if err = c.writeFilterConfigBundle(ctx, gatewayName, gatewayNamespace, configSecretNamespace, marshaled, uuid); err != nil {
 		return false, err
