@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 
+	runtimeapi "github.com/envoyproxy/ai-gateway/api/runtime"
 	"github.com/envoyproxy/ai-gateway/internal/filterapi"
 )
 
@@ -16,6 +17,21 @@ import (
 // When config.CredentialOverride is set, the returned handler sources the upstream credential
 // per-request and falls back to the static credential (or returns 401) as configured.
 func NewHandler(ctx context.Context, config *filterapi.BackendAuth) (filterapi.BackendAuthHandler, error) {
+	return NewHandlerWithResolver(ctx, config, nil)
+}
+
+// NewHandlerWithResolver handles explicit application references without fallback.
+func NewHandlerWithResolver(ctx context.Context, config *filterapi.BackendAuth, resolver runtimeapi.CredentialResolver) (filterapi.BackendAuthHandler, error) {
+	if config.ExternalCredential != "" {
+		if resolver == nil {
+			return nil, errors.New("external credential resolver is not configured")
+		}
+		if len(config.ExternalCredential) > 4096 || config.APIKey != nil || config.AWSAuth != nil || config.AzureAPIKey != nil || config.AnthropicAPIKey != nil || config.AzureAuth != nil || config.GCPAuth != nil || config.CredentialOverride != nil {
+			return nil, errors.New("external credential cannot be combined with another credential source")
+		}
+		return &externalCredentialHandler{reference: config.ExternalCredential, resolve: resolver}, nil
+	}
+
 	var (
 		inner   filterapi.BackendAuthHandler
 		applyFn applyCredentialFn

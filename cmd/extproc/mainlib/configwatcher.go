@@ -15,6 +15,7 @@ import (
 
 	"sigs.k8s.io/yaml"
 
+	runtimeapi "github.com/envoyproxy/ai-gateway/api/runtime"
 	"github.com/envoyproxy/ai-gateway/internal/filterapi"
 	"github.com/envoyproxy/ai-gateway/internal/version"
 )
@@ -67,6 +68,10 @@ type ConfigWatcherFactory func(WatchOptions) (ConfigWatcher, error)
 // Options configures optional extensions to Main. Its zero value preserves the
 // bundle-file watcher, including its startup behavior.
 type Options struct {
+	// CredentialResolver resolves explicit externalCredential backend references
+	// for every upstream authentication attempt. Nil rejects such references.
+	CredentialResolver runtimeapi.CredentialResolver
+
 	ConfigWatcherFactory ConfigWatcherFactory
 	// MaxConfigBytes must be positive when a custom factory is supplied.
 	// Watchers should enforce it while fetching; mainlib checks it before decoding.

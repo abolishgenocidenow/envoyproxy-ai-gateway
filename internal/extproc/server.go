@@ -25,6 +25,7 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/structpb"
 
+	runtimeapi "github.com/envoyproxy/ai-gateway/api/runtime"
 	"github.com/envoyproxy/ai-gateway/internal/backendauth"
 	"github.com/envoyproxy/ai-gateway/internal/filterapi"
 	"github.com/envoyproxy/ai-gateway/internal/internalapi"
@@ -53,6 +54,8 @@ func loggerFromContext(ctx context.Context) *slog.Logger {
 
 // Server implements the external processor server.
 type Server struct {
+	credentialResolver runtimeapi.CredentialResolver
+
 	logger                        *slog.Logger
 	debugLogEnabled               bool
 	enableRedaction               bool
@@ -64,10 +67,19 @@ type Server struct {
 	uuidFn                        func() string
 }
 
+// ServerOptions contains immutable construction-time runtime extensions.
+type ServerOptions struct{ CredentialResolver runtimeapi.CredentialResolver }
+
 // NewServer creates a new external processor server.
 func NewServer(logger *slog.Logger, enableRedaction bool) (*Server, error) {
+	return NewServerWithOptions(logger, enableRedaction, ServerOptions{})
+}
+
+// NewServerWithOptions creates a server with application-owned extensions.
+func NewServerWithOptions(logger *slog.Logger, enableRedaction bool, opts ServerOptions) (*Server, error) {
 	debugLogEnabled := logger.Enabled(context.Background(), slog.LevelDebug)
 	srv := &Server{
+		credentialResolver:       opts.CredentialResolver,
 		logger:                   logger,
 		debugLogEnabled:          debugLogEnabled,
 		enableRedaction:          enableRedaction,
@@ -83,7 +95,9 @@ func NewServer(logger *slog.Logger, enableRedaction bool) (*Server, error) {
 // without holding the publication lock; this does not coordinate route activation.
 // Callers must not mutate config after passing it to LoadConfig.
 func (s *Server) LoadConfig(ctx context.Context, config *filterapi.Config) error {
-	newConfig, err := filterapi.NewRuntimeConfig(ctx, config, backendauth.NewHandler)
+	newConfig, err := filterapi.NewRuntimeConfig(ctx, config, func(ctx context.Context, auth *filterapi.BackendAuth) (filterapi.BackendAuthHandler, error) {
+		return backendauth.NewHandlerWithResolver(ctx, auth, s.credentialResolver)
+	})
 	if err != nil {
 		return fmt.Errorf("cannot create runtime filter config: %w", err)
 	}

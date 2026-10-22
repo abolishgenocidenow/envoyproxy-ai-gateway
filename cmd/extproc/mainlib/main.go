@@ -375,7 +375,7 @@ func MainWithOptions(ctx context.Context, args []string, stderr io.Writer, opts 
 
 	extproc.LogRequestHeaderAttributes = logRequestHeaderAttributes
 
-	server, err := extproc.NewServer(l, flags.enableRedaction)
+	server, err := extproc.NewServerWithOptions(l, flags.enableRedaction, extproc.ServerOptions{CredentialResolver: opts.CredentialResolver})
 	if err != nil {
 		return fmt.Errorf("failed to create external processor server: %w", err)
 	}

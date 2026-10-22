@@ -211,6 +211,10 @@ type Backend struct {
 
 // BackendAuth corresponds partially to BackendSecurityPolicy in api/v1alpha1/api.go.
 type BackendAuth struct {
+	// ExternalCredential is an opaque application-owned credential reference.
+	// It is mutually exclusive with inline credentials and CredentialOverride.
+	ExternalCredential string `json:"externalCredential,omitempty"`
+
 	// APIKey is a location of the api key secret file.
 	APIKey *APIKeyAuth `json:"apiKey,omitempty"`
 	// AWSAuth specifies the location of the AWS credential file and region.
