@@ -8,9 +8,10 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	runtimeapi "github.com/envoyproxy/ai-gateway/api/runtime"
 	"github.com/envoyproxy/ai-gateway/internal/filterapi"
-	"github.com/stretchr/testify/require"
 )
 
 func TestExternalCredentialEveryAttemptAndNoFallback(t *testing.T) {

@@ -6,13 +6,14 @@ package backendauth
 import (
 	"bytes"
 	"context"
-	"golang.org/x/net/http/httpguts"
 	"maps"
+
+	corev3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
+	"golang.org/x/net/http/httpguts"
+	"google.golang.org/protobuf/proto"
 
 	runtimeapi "github.com/envoyproxy/ai-gateway/api/runtime"
 	"github.com/envoyproxy/ai-gateway/internal/internalapi"
-	corev3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
-	"google.golang.org/protobuf/proto"
 )
 
 type externalCredentialHandler struct {
