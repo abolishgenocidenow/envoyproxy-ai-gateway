@@ -1,0 +1,142 @@
+[
+  {
+    "name": "initialize",
+    "request": {
+      "jsonrpc": "2.0",
+      "id": 1,
+      "method": "initialize",
+      "params": {
+        "protocolVersion": "2025-06-18",
+        "capabilities": {},
+        "clientInfo": {
+          "name": "fixture",
+          "version": "1"
+        }
+      }
+    },
+    "status": 200,
+    "upstreamCalls": 2,
+    "contentType": "application/json"
+  },
+  {
+    "name": "list filters unauthorized tools",
+    "request": {
+      "jsonrpc": "2.0",
+      "id": 2,
+      "method": "tools/list",
+      "params": {}
+    },
+    "status": 200,
+    "upstreamCalls": 1,
+    "tools": ["backend__allowed"],
+    "contentType": "text/event-stream"
+  },
+  {
+    "name": "allowed call strips backend prefix",
+    "request": {
+      "jsonrpc": "2.0",
+      "id": 3,
+      "method": "tools/call",
+      "params": {
+        "name": "backend__allowed",
+        "arguments": {
+          "value": "hello"
+        }
+      }
+    },
+    "status": 200,
+    "upstreamCalls": 1,
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "hello"
+        }
+      ]
+    },
+    "contentType": "application/json"
+  },
+  {
+    "name": "unauthorized call never reaches backend",
+    "request": {
+      "jsonrpc": "2.0",
+      "id": 4,
+      "method": "tools/call",
+      "params": {
+        "name": "backend__denied",
+        "arguments": {}
+      }
+    },
+    "status": 403,
+    "upstreamCalls": 0,
+    "error": "access denied"
+  },
+  {
+    "name": "session is bound to verified subject",
+    "subject": "other-user",
+    "request": {
+      "jsonrpc": "2.0",
+      "id": 5,
+      "method": "tools/list",
+      "params": {}
+    },
+    "status": 401,
+    "upstreamCalls": 0,
+    "error": "subject"
+  },
+  {
+    "name": "corrupted session rejected",
+    "corruptSession": true,
+    "request": {
+      "jsonrpc": "2.0",
+      "id": 6,
+      "method": "tools/list",
+      "params": {}
+    },
+    "status": 400,
+    "upstreamCalls": 0,
+    "error": "invalid session"
+  },
+  {
+    "name": "missing session rejected",
+    "omitSession": true,
+    "request": {
+      "jsonrpc": "2.0",
+      "id": 7,
+      "method": "tools/list",
+      "params": {}
+    },
+    "status": 400,
+    "upstreamCalls": 0,
+    "error": "missing session"
+  },
+  {
+    "name": "existing session sees new authorization",
+    "denyAll": true,
+    "request": {
+      "jsonrpc": "2.0",
+      "id": 8,
+      "method": "tools/list",
+      "params": {}
+    },
+    "status": 200,
+    "upstreamCalls": 1,
+    "tools": [],
+    "contentType": "text/event-stream"
+  },
+  {
+    "name": "existing session cannot call revoked tool",
+    "request": {
+      "jsonrpc": "2.0",
+      "id": 9,
+      "method": "tools/call",
+      "params": {
+        "name": "backend__allowed",
+        "arguments": {}
+      }
+    },
+    "status": 403,
+    "upstreamCalls": 0,
+    "error": "access denied"
+  }
+]

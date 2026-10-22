@@ -59,12 +59,16 @@ func loggerFromContext(ctx context.Context) *slog.Logger {
 // Server implements the external processor server.
 type Server struct {
 	credentialResolver runtimeapi.CredentialResolver
+	routing            runtimeapi.ExtProcRouting
+	hostRequests       map[string]*hostRequest
+	hostRequestsMu     sync.Mutex
 
 	logger                        *slog.Logger
 	debugLogEnabled               bool
 	enableRedaction               bool
 	config                        *filterapi.RuntimeConfig
 	configMutex                   sync.RWMutex
+	configGeneration              uint64
 	processorFactories            map[string]ProcessorFactory
 	routerProcessorsPerReqID      map[string]Processor
 	routerProcessorsPerReqIDMutex sync.RWMutex
@@ -72,7 +76,10 @@ type Server struct {
 }
 
 // ServerOptions contains immutable construction-time runtime extensions.
-type ServerOptions struct{ CredentialResolver runtimeapi.CredentialResolver }
+type ServerOptions struct {
+	CredentialResolver runtimeapi.CredentialResolver
+	Routing            runtimeapi.ExtProcRouting
+}
 
 // NewServer creates a new external processor server.
 func NewServer(logger *slog.Logger, enableRedaction bool) (*Server, error) {
@@ -84,6 +91,8 @@ func NewServerWithOptions(logger *slog.Logger, enableRedaction bool, opts Server
 	debugLogEnabled := logger.Enabled(context.Background(), slog.LevelDebug)
 	srv := &Server{
 		credentialResolver:       opts.CredentialResolver,
+		routing:                  opts.Routing,
+		hostRequests:             make(map[string]*hostRequest),
 		logger:                   logger,
 		debugLogEnabled:          debugLogEnabled,
 		enableRedaction:          enableRedaction,
@@ -99,6 +108,9 @@ func NewServerWithOptions(logger *slog.Logger, enableRedaction bool, opts Server
 // without holding the publication lock; this does not coordinate route activation.
 // Callers must not mutate config after passing it to LoadConfig.
 func (s *Server) LoadConfig(ctx context.Context, config *filterapi.Config) error {
+	if s.routing != nil && (config == nil || config.UUID == "") {
+		return errors.New("host routing requires a configuration UUID")
+	}
 	newConfig, err := filterapi.NewRuntimeConfig(ctx, config, func(ctx context.Context, auth *filterapi.BackendAuth) (filterapi.BackendAuthHandler, error) {
 		return backendauth.NewHandlerWithResolver(ctx, auth, s.credentialResolver)
 	})
@@ -107,6 +119,7 @@ func (s *Server) LoadConfig(ctx context.Context, config *filterapi.Config) error
 	}
 	s.configMutex.Lock()
 	s.config = newConfig
+	s.configGeneration++
 	s.configMutex.Unlock()
 	return nil
 }
@@ -158,6 +171,9 @@ const internalReqIDHeader = internalapi.EnvoyAIGatewayHeaderPrefix + "internal-r
 
 // Process implements [extprocv3.ExternalProcessorServer].
 func (s *Server) Process(stream extprocv3.ExternalProcessor_ProcessServer) error {
+	if s.routing != nil {
+		return s.processWithHost(stream)
+	}
 	ctx := stream.Context()
 	if s.debugLogEnabled {
 		s.logger.Debug("handling a new stream", slog.Any("config_uuid", s.currentConfig().UUID))
@@ -296,7 +312,7 @@ func (s *Server) processMsg(ctx context.Context, p Processor, req *extprocv3.Pro
 		}
 
 		// For router filter, inject the internal request ID header so upstream filter can use it
-		if !isUpstreamFilter && resp != nil {
+		if s.routing == nil && !isUpstreamFilter && resp != nil {
 			if requestHeaders, ok := resp.Response.(*extprocv3.ProcessingResponse_RequestHeaders); ok {
 				// Ensure we have header mutation to add the internal request ID
 				if requestHeaders.RequestHeaders == nil {

@@ -33,6 +33,7 @@ import (
 	"github.com/envoyproxy/ai-gateway/internal/internalapi"
 	"github.com/envoyproxy/ai-gateway/internal/json"
 	"github.com/envoyproxy/ai-gateway/internal/llmcostcel"
+	"github.com/envoyproxy/ai-gateway/internal/llmrequest"
 	"github.com/envoyproxy/ai-gateway/internal/metrics"
 	"github.com/envoyproxy/ai-gateway/internal/tracing/tracingapi"
 	"github.com/envoyproxy/ai-gateway/internal/translator"
@@ -273,20 +274,8 @@ func createUserFacingErrorResponse(statusCode int, errorType string, message str
 
 // ProcessRequestBody implements [Processor.ProcessRequestBody].
 func (r *routerProcessor[ReqT, RespT, RespChunkT, EndpointSpecT]) ProcessRequestBody(ctx context.Context, rawBody *extprocv3.HttpBody) (*extprocv3.ProcessingResponse, error) {
-	var (
-		originalModel       internalapi.OriginalModel
-		body                *ReqT
-		stream              bool
-		mutatedOriginalBody []byte
-		err                 error
-	)
 	costConfigured := len(r.config.RequestCosts) > 0 || len(r.config.GlobalRequestCosts) > 0
-	contentType := r.requestHeaders["content-type"]
-	if strings.HasPrefix(strings.ToLower(contentType), "multipart/form-data") {
-		originalModel, body, stream, mutatedOriginalBody, err = r.eh.ParseMultipartBody(rawBody.Body, contentType, costConfigured)
-	} else {
-		originalModel, body, stream, mutatedOriginalBody, err = r.eh.ParseBody(rawBody.Body, costConfigured)
-	}
+	originalModel, body, stream, capturedBody, forceMutation, err := llmrequest.Capture[ReqT, RespT, RespChunkT](r.eh, rawBody.Body, r.requestHeaders["content-type"], costConfigured)
 	if err != nil {
 		if userFacingErr := internalapi.GetUserFacingError(err); userFacingErr != nil {
 			// return to user as 400 -  e.g., "malformed request: failed to parse JSON for /v1/chat/completions"
@@ -318,12 +307,8 @@ func (r *routerProcessor[ReqT, RespT, RespChunkT, EndpointSpecT]) ProcessRequest
 		}
 	}
 
-	if mutatedOriginalBody != nil {
-		r.originalRequestBodyRaw = mutatedOriginalBody
-		r.forceBodyMutation = true
-	} else {
-		r.originalRequestBodyRaw = rawBody.Body
-	}
+	r.originalRequestBodyRaw = capturedBody
+	r.forceBodyMutation = forceMutation
 
 	r.requestHeaders[internalapi.ModelNameHeaderKeyDefault] = originalModel
 
@@ -410,8 +395,7 @@ func (u *upstreamProcessor[ReqT, RespT, RespChunkT, EndpointSpecT]) ProcessReque
 	// * The request is a retry request because the body mutation might have happened the previous iteration.
 	// * The request is a streaming request, and the IncludeUsage option is set to false since we need to ensure that
 	//	the token usage is calculated correctly without being bypassed.
-	forceBodyMutation := u.onRetry() || u.parent.forceBodyMutation
-	newHeaders, newBody, err := u.translator.RequestBody(u.parent.originalRequestBodyRaw, u.parent.originalRequestBody, forceBodyMutation)
+	prepared, err := llmrequest.Prepare(u.translator, u.parent.originalRequestBodyRaw, u.parent.originalRequestBody, u.requestHeaders, u.onRetry(), u.parent.forceBodyMutation, u.headerMutator, u.bodyMutator, u.logger, false)
 	if err != nil {
 		if userFacingErr := internalapi.GetUserFacingError(err); userFacingErr != nil {
 			// return to user as 422 -  e.g., "invalid request body: tool_choice type not supported"
@@ -421,44 +405,11 @@ func (u *upstreamProcessor[ReqT, RespT, RespChunkT, EndpointSpecT]) ProcessReque
 		return nil, fmt.Errorf("failed to transform request: %w", err)
 	}
 
-	headerMutation, bodyMutation := mutationsFromTranslationResult(newHeaders, newBody)
-
-	// Apply header mutations from the route and also restore original headers on retry.
-	if h := u.headerMutator; h != nil {
-		sets, removes := u.headerMutator.Mutate(u.requestHeaders, u.onRetry())
-		headerMutation.RemoveHeaders = append(headerMutation.RemoveHeaders, removes...)
-		for _, hdr := range sets {
-			headerMutation.SetHeaders = append(headerMutation.SetHeaders, &corev3.HeaderValueOption{
-				AppendAction: corev3.HeaderValueOption_OVERWRITE_IF_EXISTS_OR_ADD,
-				Header: &corev3.HeaderValue{
-					Key:      hdr.Key(),
-					RawValue: []byte(hdr.Value()),
-				},
-			})
-		}
-	}
-
-	// Decide whether the upstream filter should replace the request body at
-	// all. If the translator emitted no body, no backend HTTPBodyMutation is
-	// configured, and we're not forcing body replay (retry or
-	// streaming-without-usage), then issuing CONTINUE_AND_REPLACE with the
-	// captured original body would clobber any body mutation applied by an
-	// earlier ext_proc filter in the chain.
-	mutatorHasMutations := u.bodyMutator != nil && u.bodyMutator.HasMutations()
-	wantBodyReplace := bodyMutation != nil || forceBodyMutation || mutatorHasMutations
-
-	if wantBodyReplace {
-		// Apply body mutations from the route and also restore original body on retry.
-		bodyMutation = applyBodyMutation(u.bodyMutator, bodyMutation, u.parent.originalRequestBodyRaw, u.logger)
-	}
-
-	// Ensure bodyMutation is not nil for subsequent processing
+	headerMutation, bodyMutation := mutationsFromTranslationResult(prepared.Headers, prepared.Body)
+	headerMutation.RemoveHeaders = append(headerMutation.RemoveHeaders, prepared.RemoveHeaders...)
+	wantBodyReplace := prepared.ReplaceBody
 	if bodyMutation == nil {
 		bodyMutation = &extprocv3.BodyMutation{}
-	}
-
-	for _, h := range headerMutation.SetHeaders {
-		u.requestHeaders[h.Header.Key] = string(h.Header.RawValue)
 	}
 
 	// x-ai-eg-upstream-host is an internal, controller-derived value consumed by backend auth handlers

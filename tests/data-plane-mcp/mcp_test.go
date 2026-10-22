@@ -945,36 +945,48 @@ func testElicit(t *testing.T, m *mcpEnv) {
 }
 
 func testNotificationCancelled(t *testing.T, m *mcpEnv) {
+	started := make(chan struct{}, 1)
+	mcp.AddTool(m.mcp1, testmcp.ToolDelay.Tool, func(ctx context.Context, request *mcp.CallToolRequest, args testmcp.ToolDelayArgs) (*mcp.CallToolResult, any, error) {
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+		return testmcp.ToolDelay.Handler(ctx, request, args)
+	})
+	t.Cleanup(func() { mcp.AddTool(m.mcp1, testmcp.ToolDelay.Tool, testmcp.ToolDelay.Handler) })
 	s := m.newSession(t)
 
-	ctx, cancel := context.WithCancel(t.Context()) //nolint: govet
-	doneCh := make(chan any)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	doneCh := make(chan struct{})
 	go func() {
+		defer close(doneCh)
 		_, _ = s.session.CallTool(ctx, &mcp.CallToolParams{
 			Name:      defaultMCPBackendResourcePrefix + testmcp.ToolDelay.Tool.Name,
 			Arguments: testmcp.ToolDelayArgs{Duration: "1s"},
 		})
-		doneCh <- struct{}{}
 	}()
 
+	// Wait until the original delay handler is entered, before it writes any
+	// response. A timer can cancel before the gateway creates its request span.
 	select {
-	case <-time.After(time.Microsecond * 500):
+	case <-started:
 		cancel()
-		// Wait for the goroutine to complete so its span doesn't leak to the next test.
-		<-doneCh
-		// Consume the CallTool span from the cancelled operation.
-		// This span will have an exception event due to cancellation.
-		requireToolSpan(t, m.collector.TakeSpan(), "default-mcp-backend", testmcp.ToolDelay.Tool.Name, false, "context canceled")
-		// we cannot do the test in TearDownSuite,
-		// we need to wait a while for notifications/cancelled,
-		// metric won't be updated if the test exits too early.
-		requireMetricGreaterThan(t, m, "mcp_method_count_total", map[string]string{
-			"mcp_method_name": "notifications/cancelled",
-		}, 0)
 	case <-doneCh:
-		cancel()
-		t.Fatal("CallTool returned before the delay")
+		t.Fatal("CallTool returned before cancellation")
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for backend dispatch")
 	}
+	select {
+	case <-doneCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("CallTool did not stop after cancellation")
+	}
+	// Consume the canceled operation's span so it cannot leak to the next test.
+	requireToolSpan(t, m.collector.TakeSpan(), "default-mcp-backend", testmcp.ToolDelay.Tool.Name, false, "context canceled")
+	requireMetricGreaterThan(t, m, "mcp_method_count_total", map[string]string{
+		"mcp_method_name": "notifications/cancelled",
+	}, 0)
 }
 
 func testComplete(t *testing.T, m *mcpEnv) {

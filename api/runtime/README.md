@@ -30,3 +30,14 @@ observations and configured request-header labels after injection.
 Existing backends without externalCredential keep the existing handler path.
 The extension supplies an authentication boundary; it does not implement
 credential delivery, workload scope assignment or route-generation activation.
+
+## Host routing
+
+`ExtProcRouting` replaces the complete phase, correlation, selection and routing
+handoff when supplied through `mainlib.Options.Routing`. The default remains the
+upstream header/xDS strategy. Host mode retains the downstream configuration
+generation for sequential upstream attempts and rejects mismatched or missing
+selections. `RoutingHandoff.ConfigUUID` identifies the immutable host policy;
+`ConfigID` is the opaque serving token returned by an upstream resolution.
+See [host composition](../../docs/design/host-composition.md) for the trust,
+cancellation, metadata and lifecycle contracts.

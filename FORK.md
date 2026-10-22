@@ -6,8 +6,11 @@ runtime-publication and external-credential integration. Feature branches remain
 independent review units. Consumers pin an exact qualified commit, not a moving
 branch. The `github.com/envoyproxy/ai-gateway` module identity is unchanged.
 
-The execution-library fork at `dio/agent-router` is a separate dependency. Its
-`execution`, `llm` and `mcp` APIs are not provided by this integration branch.
+The `execution`, `llm` and `mcp` packages provide reusable execution without
+starting listeners. These APIs incorporate the library boundary from
+`dio/agent-router` commits `ef434b55` and `922c05cb`; their public imports retain
+the original module identity. Mainlib and execution-library consumers can share
+one dependency tree in a single Go binary.
 
 ## Qualification
 
@@ -41,10 +44,12 @@ Use Go 1.27.2 or newer. Mainlib owns processor listeners, telemetry and shutdown
 the embedding application owns its context, watcher transport and credential
 resolver. This is the runtime dependency closure, not a lightweight SDK.
 
-One build can select only one replacement for this module identity. A host that
-also imports the `dio/agent-router` execution-library extensions must either use
-a fork containing both APIs or isolate the two hosts into separate modules and
-binaries. A dependency's own replacement directives are not inherited.
+One build selects one replacement for this module identity. This fork supplies
+both mainlib and the execution-library APIs, so the consuming application's
+replacement covers both. A dependency's own replacement directives are not
+inherited. Default mainlib options retain upstream header/xDS behavior; see
+[host composition](docs/design/host-composition.md) for injected routing and MCP
+transport contracts.
 
 `bash tools/check-mainlib-consumer.sh` creates an independent temporary module and
 qualifies public imports, option construction, initial watcher application and

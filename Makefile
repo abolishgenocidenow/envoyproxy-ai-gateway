@@ -180,6 +180,14 @@ codegen: ## Generate typed client, listers, and informers for the API.
 
 ##@ Testing
 
+.PHONY: test-execution-library
+test-execution-library: ## Verify public libraries, dependency boundaries and external consumer parity.
+	@bash tools/verify-execution-library.sh $(GO_TEST_ARGS)
+
+.PHONY: test-execution-contract
+test-execution-contract: ## Capture LLM/MCP behavior required by execution library extraction.
+	@go test $(GO_TEST_ARGS) -run '^TestExecutionContract_' ./internal/extproc ./internal/mcpproxy
+
 # This runs the unit tests for the codebase, excluding the integration tests.
 .PHONY: test
 test: ## Run the unit tests for the codebase. This doesn't run the integration tests like test-* targets.
