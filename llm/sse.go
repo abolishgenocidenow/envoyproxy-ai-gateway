@@ -131,7 +131,7 @@ func (a *Attempt) responseSSE(body []byte, end bool) (result Result, err error) 
 	if err == nil && end && !a.terminalSeen {
 		// Audio SSE endpoints use their own terminal event names. Completion checks
 		// here apply to the chat/messages/responses providers served by this path.
-		if a.requireTerminal {
+		if a.requireTerminal && !a.reader.DiscardedIncomplete() {
 			err = ErrMissingTerminal
 		}
 	}

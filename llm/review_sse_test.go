@@ -68,3 +68,23 @@ func TestReviewStrictAllowsResponsesDone(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestReviewLibraryDiscardsIncomplete(t *testing.T) {
+	for _, raw := range []string{"data: {", "data: {}\n"} {
+		t.Run(raw, func(t *testing.T) {
+			a := streamAttempt(t, "/v1/chat/completions", "OpenAI", 0)
+			_, err := a.ResponseBody([]byte(raw), true)
+			if err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestReviewCleanEOFMissingTerminal(t *testing.T) {
+	a := streamAttempt(t, "/v1/chat/completions", "OpenAI", 0)
+	_, err := a.ResponseBody([]byte("data: {}\n\n"), true)
+	if !errors.Is(err, ErrMissingTerminal) {
+		t.Fatalf("clean EOF: %v", err)
+	}
+}

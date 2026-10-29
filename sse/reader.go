@@ -37,6 +37,7 @@ type Reader struct {
 	FlushFinal bool
 	id         string
 	comment    bool
+	discarded  bool
 	limit      int
 	buffer     []byte
 	lineStart  int
@@ -169,10 +170,17 @@ func (r *Reader) End(callback ...func(Event) error) error {
 	completeDone = completeDone && dataLines == 1 && r.lineStart == len(r.buffer)
 	if len(r.buffer) > 0 && (r.FlushFinal || completeDone) {
 		r.err = r.dispatch(emit)
-	} else if len(r.buffer) > 0 && r.Strict {
-		r.err = ErrIncomplete
+	} else if len(r.buffer) > 0 && (dataLines > 0 || r.lineStart < len(r.buffer)) {
+		if r.Strict {
+			r.err = ErrIncomplete
+		} else {
+			r.discarded = true
+		}
 	}
 	r.buffer = r.buffer[:0]
 	r.lineStart = 0
 	return r.err
 }
+
+// DiscardedIncomplete reports whether End discarded an unfinished event in tolerant mode.
+func (r *Reader) DiscardedIncomplete() bool { return r.discarded }
