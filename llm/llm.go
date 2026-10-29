@@ -53,6 +53,8 @@ type Input struct {
 	IncludeUsage bool
 	// SSELimit bounds a retained SSE event or AWS binary frame. Nonpositive values use sse.DefaultLimit.
 	SSELimit int
+	// StrictSSE reports incomplete events and data after a terminal event.
+	StrictSSE bool
 }
 
 // Backend is one trusted selection supplied by pick or another host adapter.
@@ -193,7 +195,7 @@ func capture[Req, Resp, Chunk any](spec endpointspec.Spec[Req, Resp, Chunk], inp
 			return nil, Mutation{}, err
 		}
 		attempts++
-		attempt := &Attempt{streaming: stream, reader: sse.NewReader(input.SSELimit), decoder: usage.Decoder{Schema: string(backend.Schema.Name)}}
+		attempt := &Attempt{streaming: stream, reader: sse.NewReader(max(0, input.SSELimit)), decoder: usage.Decoder{Schema: string(backend.Schema.Name)}}
 		switch any(spec).(type) {
 		case endpointspec.ChatCompletionsEndpointSpec, endpointspec.CompletionsEndpointSpec, endpointspec.ResponsesEndpointSpec, endpointspec.MessagesEndpointSpec:
 			attempt.requireTerminal = true
@@ -201,6 +203,8 @@ func capture[Req, Resp, Chunk any](spec endpointspec.Spec[Req, Resp, Chunk], inp
 		case endpointspec.EmbeddingsEndpointSpec, endpointspec.ImageGenerationEndpointSpec, endpointspec.DecisionsEndpointSpec:
 			attempt.observeUsage = true
 		}
+		attempt.strictSSE = input.StrictSSE
+		attempt.reader.Strict = input.StrictSSE
 		attempt.headers = tr.ResponseHeaders
 		attempt.body = func(headers map[string]string, body []byte, end bool) ([]Header, []byte, Usage, string, error) {
 			return tr.ResponseBody(headers, bytes.NewReader(body), end, tracingapi.Span[Resp, Chunk](nil))
@@ -222,6 +226,9 @@ type Result struct {
 	Usage   Usage
 	Model   string
 	Done    bool
+	// UsageError reports invalid streaming usage without interrupting forwarding.
+	// It is sticky for the attempt. Hosts must treat Usage as invalid when it is non-nil.
+	UsageError error
 }
 
 // Attempt owns provider-specific streaming state and usage for a single selection.
@@ -240,6 +247,8 @@ type Attempt struct {
 	terminalSeen    bool
 	requireTerminal bool
 	observeUsage    bool
+	strictSSE       bool
+	usageError      error
 }
 
 // ResponseHeaders starts response translation. The host must decode content
@@ -286,7 +295,7 @@ func (a *Attempt) ResponseBody(body []byte, end bool) (Result, error) {
 	headers, changed, usage, model, err := a.body(a.responseHeaders, body, end)
 	if !a.streaming && a.observeUsage && err == nil {
 		observed, observeErr := a.decoder.Observe(body)
-		usage = observed
+		usage.Override(observed)
 		if observeErr != nil {
 			err = observeErr
 		}

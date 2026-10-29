@@ -20,7 +20,7 @@ import (
 	"github.com/envoyproxy/ai-gateway/internal/internalapi"
 	"github.com/envoyproxy/ai-gateway/internal/json"
 	"github.com/envoyproxy/ai-gateway/internal/ptr"
-	metrics "github.com/envoyproxy/ai-gateway/usage"
+	"github.com/envoyproxy/ai-gateway/usage"
 )
 
 // mockErrorReader is a helper for testing io.Reader failures.
@@ -1906,7 +1906,7 @@ data: {"type": "message_stop"}
 			// Feed each event block separately (simulating chunked SSE delivery),
 			// with the last chunk marked as endOfStream.
 			chunks := splitSSEEvents(tt.events)
-			var tokenUsage metrics.TokenUsage
+			var tokenUsage usage.TokenUsage
 			for i, chunk := range chunks {
 				endOfStream := i == len(chunks)-1
 				_, _, usage, _, err := parser.Process(strings.NewReader(chunk), endOfStream, nil)

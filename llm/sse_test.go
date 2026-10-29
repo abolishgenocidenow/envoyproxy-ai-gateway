@@ -13,9 +13,9 @@ import (
 	"github.com/envoyproxy/ai-gateway/sse"
 )
 
-func streamAttempt(t *testing.T, operation, schema string, limit int) *Attempt {
+func streamAttempt(t *testing.T, operation, schema string, limit int, strict ...bool) *Attempt {
 	t.Helper()
-	r, err := NewRequest(operation, Input{Body: []byte(`{"model":"test","stream":true,"messages":[{"role":"user","content":"hi"}],"max_tokens":20}`), SSELimit: limit})
+	r, err := NewRequest(operation, Input{Body: []byte(`{"model":"test","stream":true,"messages":[{"role":"user","content":"hi"}],"max_tokens":20}`), SSELimit: limit, StrictSSE: len(strict) > 0 && strict[0]})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +80,7 @@ func TestSSELimitsAndDone(t *testing.T) {
 		{"oversize", "data: " + strings.Repeat("x", 100), false, sse.ErrOverflow},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			a := streamAttempt(t, "/v1/chat/completions", "OpenAI", 32)
+			a := streamAttempt(t, "/v1/chat/completions", "OpenAI", 32, true)
 			r, err := a.ResponseBody([]byte(tt.input), tt.end)
 			if !errors.Is(err, tt.want) || !r.Done {
 				t.Fatalf("got %v done=%v", err, r.Done)

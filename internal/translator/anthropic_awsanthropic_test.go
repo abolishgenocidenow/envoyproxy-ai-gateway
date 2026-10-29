@@ -18,7 +18,7 @@ import (
 	anthropicschema "github.com/envoyproxy/ai-gateway/internal/apischema/anthropic"
 	"github.com/envoyproxy/ai-gateway/internal/internalapi"
 	"github.com/envoyproxy/ai-gateway/internal/json"
-	metrics "github.com/envoyproxy/ai-gateway/usage"
+	"github.com/envoyproxy/ai-gateway/usage"
 )
 
 func TestAnthropicToAWSAnthropicTranslator_RequestBody_ModelNameOverride(t *testing.T) {
@@ -539,7 +539,7 @@ func TestAnthropicToAWSAnthropicTranslator_ResponseBody(t *testing.T) {
 	translator := NewAnthropicToAWSAnthropicTranslator("bedrock-2023-05-31", "")
 	translator.(*anthropicToAWSAnthropicTranslator).stream = true
 	var results []byte
-	var tokenUsage metrics.TokenUsage
+	var tokenUsage usage.TokenUsage
 	for i := range chunkBytes {
 		var hm []internalapi.Header
 		var newBody []byte

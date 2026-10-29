@@ -25,7 +25,7 @@ import (
 	"github.com/envoyproxy/ai-gateway/internal/internalapi"
 	"github.com/envoyproxy/ai-gateway/internal/json"
 	"github.com/envoyproxy/ai-gateway/internal/tracing/tracingapi"
-	metrics "github.com/envoyproxy/ai-gateway/usage"
+	"github.com/envoyproxy/ai-gateway/usage"
 )
 
 // https://docs.aws.amazon.com/bedrock/latest/userguide/model-parameters-anthropic-claude-messages.html
@@ -44,7 +44,8 @@ func NewChatCompletionOpenAIToAWSAnthropicTranslator(apiVersion string, modelNam
 // This uses the AWS Bedrock InvokeModel and InvokeModelWithResponseStream APIs:
 // https://docs.aws.amazon.com/bedrock/latest/userguide/model-parameters-anthropic-claude-messages.html
 type openAIToAWSAnthropicTranslatorV1ChatCompletion struct {
-	usageDecoder      metrics.Decoder
+	amazonState       amazonStreamState
+	usageDecoder      usage.Decoder
 	apiVersion        string
 	modelNameOverride internalapi.ModelNameOverride
 	streamParser      *anthropicStreamParser
@@ -164,13 +165,18 @@ func (o *openAIToAWSAnthropicTranslatorV1ChatCompletion) ResponseHeaders(_ map[s
 // is exactly what gets executed. The response does not contain a model field, so we return
 // the request model that was originally sent.
 func (o *openAIToAWSAnthropicTranslatorV1ChatCompletion) ResponseBody(_ map[string]string, body io.Reader, endOfStream bool, span tracingapi.ChatCompletionSpan) (
-	newHeaders []internalapi.Header, newBody []byte, tokenUsage metrics.TokenUsage, responseModel string, err error,
+	newHeaders []internalapi.Header, newBody []byte, tokenUsage usage.TokenUsage, responseModel string, err error,
 ) {
 	// If a stream parser was initialized, this is a streaming request.
 	if o.streamParser != nil {
 		defer func() { tokenUsage = o.usageDecoder.Snapshot() }()
+		defer func() {
+			if err == nil && endOfStream && !o.amazonState.terminal {
+				err = ErrMissingTerminal
+			}
+		}()
 		var anthropicSSE []byte
-		err = readAmazonEventStream(body, &o.bufferedBody, o.streamLimit, endOfStream, func(msg eventstream.Message) error {
+		err = o.amazonState.read(body, &o.bufferedBody, o.streamLimit, endOfStream, func(msg eventstream.Message) error {
 			data, raw, decodeErr := unwrapAnthropicEvent(msg)
 			if decodeErr != nil {
 				return decodeErr
@@ -204,12 +210,12 @@ func (o *openAIToAWSAnthropicTranslatorV1ChatCompletion) ResponseBody(_ map[stri
 
 	openAIResp, tokenUsage, err := messageToChatCompletion(&anthropicResp, responseModel)
 	if err != nil {
-		return nil, nil, metrics.TokenUsage{}, "", err
+		return nil, nil, usage.TokenUsage{}, "", err
 	}
 
 	newBody, err = json.Marshal(openAIResp)
 	if err != nil {
-		return nil, nil, metrics.TokenUsage{}, "", fmt.Errorf("failed to marshal body: %w", err)
+		return nil, nil, usage.TokenUsage{}, "", fmt.Errorf("failed to marshal body: %w", err)
 	}
 
 	if span != nil {

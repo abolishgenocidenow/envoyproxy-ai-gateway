@@ -18,7 +18,7 @@ import (
 	"github.com/envoyproxy/ai-gateway/internal/internalapi"
 	"github.com/envoyproxy/ai-gateway/internal/json"
 	"github.com/envoyproxy/ai-gateway/internal/tracing/tracingapi"
-	metrics "github.com/envoyproxy/ai-gateway/usage"
+	"github.com/envoyproxy/ai-gateway/usage"
 )
 
 // NewTokenizeTranslator implements [Factory] for OpenAI to OpenAI tokenize translation.
@@ -122,7 +122,7 @@ func (o *ToOpenAITokenize) ResponseHeaders(map[string]string) (newHeaders []inte
 // OpenAI tokenize responses are passed through unchanged. The response does not contain
 // a model field, so we fallback to the request model for metrics and tracing consistency.
 func (o *ToOpenAITokenize) ResponseBody(_ map[string]string, body io.Reader, _ bool, span tracingapi.TokenizeSpan) (
-	newHeaders []internalapi.Header, newBody []byte, tokenUsage metrics.TokenUsage, responseModel string, err error,
+	newHeaders []internalapi.Header, newBody []byte, tokenUsage usage.TokenUsage, responseModel string, err error,
 ) {
 	resp := &tokenize.Response{}
 	if err := json.NewDecoder(body).Decode(resp); err != nil {

@@ -17,7 +17,7 @@ import (
 	"github.com/envoyproxy/ai-gateway/internal/internalapi"
 	"github.com/envoyproxy/ai-gateway/internal/json"
 	"github.com/envoyproxy/ai-gateway/internal/ptr"
-	metrics "github.com/envoyproxy/ai-gateway/usage"
+	"github.com/envoyproxy/ai-gateway/usage"
 )
 
 func TestAnthropicToGCPAnthropicTranslator_RequestBody_ModelNameOverride(t *testing.T) {
@@ -565,7 +565,7 @@ func TestAnthropicToGCPAnthropicTranslator_ResponseBody_StreamingTokenUsage(t *t
 		name          string
 		chunk         string
 		endOfStream   bool
-		expectedUsage metrics.TokenUsage
+		expectedUsage usage.TokenUsage
 	}{
 		{
 			name:          "regular streaming chunk without usage",
@@ -619,17 +619,17 @@ func TestAnthropicToGCPAnthropicTranslator_ResponseBody_StreamingEdgeCases(t *te
 	tests := []struct {
 		name          string
 		chunk         string
-		expectedUsage metrics.TokenUsage
+		expectedUsage usage.TokenUsage
 	}{
 		{
 			name:          "message_start without message field",
 			chunk:         "event: message_start\ndata: {\"type\":\"message_start\"}\n\n",
-			expectedUsage: metrics.TokenUsage{},
+			expectedUsage: usage.TokenUsage{},
 		},
 		{
 			name:          "message_start without usage field",
 			chunk:         "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_123\"}}\n\n",
-			expectedUsage: metrics.TokenUsage{},
+			expectedUsage: usage.TokenUsage{},
 		},
 		{
 			name:          "message_delta without usage field",
@@ -659,8 +659,8 @@ func TestAnthropicToGCPAnthropicTranslator_ResponseBody_StreamingEdgeCases(t *te
 	}
 }
 
-func tokenUsageFrom(in, cachedInput, cacheCreationInput, out, total, reasoning int32) metrics.TokenUsage {
-	var usage metrics.TokenUsage
+func tokenUsageFrom(in, cachedInput, cacheCreationInput, out, total, reasoning int32) usage.TokenUsage {
+	var usage usage.TokenUsage
 	if in >= 0 {
 		usage.SetInputTokens(uint32(in))
 	}

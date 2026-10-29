@@ -10,6 +10,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"github.com/envoyproxy/ai-gateway/internal/json"
 	"io"
 
 	"github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream"
@@ -103,4 +104,37 @@ func readAmazonEventStream(r io.Reader, pending *[]byte, limit int, end bool, em
 		return io.ErrUnexpectedEOF
 	}
 	return nil
+}
+
+// amazonStreamState tracks provider completion across binary frame boundaries.
+type amazonStreamState struct{ terminal bool }
+
+var ErrMissingTerminal = errors.New("stream ended without a terminal event")
+
+func (s *amazonStreamState) read(r io.Reader, pending *[]byte, limit int, end bool, emit func(eventstream.Message) error) error {
+	err := readAmazonEventStream(r, pending, limit, end, func(msg eventstream.Message) error {
+		if typ := msg.Headers.Get(":event-type"); typ != nil && (typ.String() == "messageStop" || typ.String() == "metadata") {
+			s.terminal = true
+		}
+		var envelope struct {
+			Bytes []byte `json:"bytes"`
+			Type  string `json:"type"`
+		}
+		if json.Unmarshal(msg.Payload, &envelope) == nil {
+			if envelope.Type == "message_stop" {
+				s.terminal = true
+			}
+			if len(envelope.Bytes) > 0 {
+				var event struct {
+					Type string `json:"type"`
+				}
+				if json.Unmarshal(envelope.Bytes, &event) == nil && event.Type == "message_stop" {
+					s.terminal = true
+				}
+			}
+		}
+		return emit(msg)
+	})
+
+	return err
 }

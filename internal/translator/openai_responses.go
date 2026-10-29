@@ -19,7 +19,7 @@ import (
 	"github.com/envoyproxy/ai-gateway/internal/internalapi"
 	"github.com/envoyproxy/ai-gateway/internal/json"
 	"github.com/envoyproxy/ai-gateway/internal/tracing/tracingapi"
-	metrics "github.com/envoyproxy/ai-gateway/usage"
+	"github.com/envoyproxy/ai-gateway/usage"
 )
 
 // NewResponsesOpenAIToOpenAITranslator implements [OpenAIResponsesTranslator] for OpenAI to OpenAI translation for responses.
@@ -98,7 +98,7 @@ func (o *openAIToOpenAITranslatorV1Responses) ResponseHeaders(map[string]string)
 // OpenAI responses support model virtualization through automatic routing and resolution,
 // so we return the actual model from the response body which may differ from the requested model.
 func (o *openAIToOpenAITranslatorV1Responses) ResponseBody(_ map[string]string, body io.Reader, _ bool, span tracingapi.ResponsesSpan) (
-	newHeaders []internalapi.Header, newBody []byte, tokenUsage metrics.TokenUsage, responseModel string, err error,
+	newHeaders []internalapi.Header, newBody []byte, tokenUsage usage.TokenUsage, responseModel string, err error,
 ) {
 	if o.stream {
 		// Handle streaming response
@@ -111,7 +111,7 @@ func (o *openAIToOpenAITranslatorV1Responses) ResponseBody(_ map[string]string, 
 
 // handleStreamingResponse handles streaming responses from the Responses API.
 func (o *openAIToOpenAITranslatorV1Responses) handleStreamingResponse(body io.Reader, span tracingapi.ResponsesSpan) (
-	newHeaders []internalapi.Header, newBody []byte, tokenUsage metrics.TokenUsage, responseModel string, err error,
+	newHeaders []internalapi.Header, newBody []byte, tokenUsage usage.TokenUsage, responseModel string, err error,
 ) {
 	chunks, err := io.ReadAll(body)
 	if err != nil {
@@ -126,7 +126,7 @@ func (o *openAIToOpenAITranslatorV1Responses) handleStreamingResponse(body io.Re
 
 // handleNonStreamingResponse handles non-streaming responses from the Responses API.
 func (o *openAIToOpenAITranslatorV1Responses) handleNonStreamingResponse(body io.Reader, span tracingapi.ResponsesSpan) (
-	newHeaders []internalapi.Header, newBody []byte, tokenUsage metrics.TokenUsage, responseModel string, err error,
+	newHeaders []internalapi.Header, newBody []byte, tokenUsage usage.TokenUsage, responseModel string, err error,
 ) {
 	var resp openai.Response
 	if err := json.NewDecoder(body).Decode(&resp); err != nil {
@@ -154,7 +154,7 @@ func (o *openAIToOpenAITranslatorV1Responses) handleNonStreamingResponse(body io
 
 // setTokenUsageFromResponse populates tokenUsage from a Response's Usage field,
 // guarding against a nil Usage (e.g. response.failed before any tokens were generated).
-func setTokenUsageFromResponse(tokenUsage *metrics.TokenUsage, resp *openai.Response) {
+func setTokenUsageFromResponse(tokenUsage *usage.TokenUsage, resp *openai.Response) {
 	if resp == nil || resp.Usage == nil {
 		return
 	}
@@ -169,7 +169,7 @@ func setTokenUsageFromResponse(tokenUsage *metrics.TokenUsage, resp *openai.Resp
 // extractUsageFromBufferEvent extracts the token usage and model from the buffered SSE events.
 // It scans complete SSE events and returns the latest usage found in response.completed,
 // response.incomplete or response.failed events.
-func (o *openAIToOpenAITranslatorV1Responses) extractUsageFromBufferEvent(span tracingapi.ResponsesSpan) (tokenUsage metrics.TokenUsage) {
+func (o *openAIToOpenAITranslatorV1Responses) extractUsageFromBufferEvent(span tracingapi.ResponsesSpan) (tokenUsage usage.TokenUsage) {
 	for {
 		event, remaining, ok := nextSSEEvent(o.buffered)
 		if !ok {

@@ -20,7 +20,7 @@ import (
 	"github.com/envoyproxy/ai-gateway/internal/internalapi"
 	"github.com/envoyproxy/ai-gateway/internal/json"
 	"github.com/envoyproxy/ai-gateway/internal/tracing/tracingapi"
-	metrics "github.com/envoyproxy/ai-gateway/usage"
+	"github.com/envoyproxy/ai-gateway/usage"
 )
 
 // NewAnthropicToAWSAnthropicTranslator creates a translator for Anthropic to AWS Bedrock Anthropic format.
@@ -35,7 +35,8 @@ func NewAnthropicToAWSAnthropicTranslator(apiVersion string, modelNameOverride i
 }
 
 type anthropicToAWSAnthropicTranslator struct {
-	usageDecoder metrics.Decoder
+	amazonState  amazonStreamState
+	usageDecoder usage.Decoder
 	streamLimit  int
 	anthropicToAnthropicTranslator
 	apiVersion       string
@@ -201,17 +202,22 @@ func (a *anthropicToAWSAnthropicTranslator) RequestBody(rawBody []byte, body *an
 
 // ResponseBody implements [AnthropicMessagesTranslator.ResponseBody].
 func (a *anthropicToAWSAnthropicTranslator) ResponseBody(_ map[string]string, body io.Reader, endOfStream bool, span tracingapi.MessageSpan) (
-	newHeaders []internalapi.Header, newBody []byte, tokenUsage metrics.TokenUsage, responseModel string, err error,
+	newHeaders []internalapi.Header, newBody []byte, tokenUsage usage.TokenUsage, responseModel string, err error,
 ) {
 	if !a.stream {
 		return a.anthropicToAnthropicTranslator.ResponseBody(nil, body, endOfStream, span)
 	}
 	defer func() { tokenUsage = a.usageDecoder.Snapshot() }()
+	defer func() {
+		if err == nil && endOfStream && !a.amazonState.terminal {
+			err = ErrMissingTerminal
+		}
+	}()
 	// For streaming responses, AWS somehow wraps each Anthropicschema.MessagesStreamChunk
 	// in an Amazon EventStream message. We need to unwrap these messages and convert them
 	// to SSE format.
 	newBody = make([]byte, 0)
-	err = readAmazonEventStream(body, &a.buffered, a.streamLimit, endOfStream, func(msg eventstream.Message) error {
+	err = a.amazonState.read(body, &a.buffered, a.streamLimit, endOfStream, func(msg eventstream.Message) error {
 		return a.convertAmazonMessage(msg, &newBody, span)
 	})
 	if err != nil {
@@ -237,7 +243,7 @@ func (a *anthropicToAWSAnthropicTranslator) convertAmazonMessage(msg eventstream
 		return err
 	}
 
-	if err := metrics.CheckError("", rawEvent.Bytes); err != nil {
+	if err := usage.CheckError("", rawEvent.Bytes); err != nil {
 		return err
 	}
 	var event anthropicschema.MessagesStreamChunk

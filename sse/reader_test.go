@@ -51,6 +51,7 @@ func TestReaderBoundsAndEOF(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			r := NewReader(tt.limit)
+			r.Strict = true
 			err := r.Feed([]byte(tt.input), func(Event) error { return nil })
 			if err == nil {
 				err = r.End()
@@ -65,26 +66,72 @@ func TestReaderBoundsAndEOF(t *testing.T) {
 	}
 }
 
-func FuzzReaderChunks(f *testing.F) {
-	for _, s := range []string{"data: one\r\n\r\n", "\xef\xbb\xbfdata: x\rdata: y\r\r", "data:\n\n", "event: error\ndata: {}\n\n"} {
-		f.Add(s, uint16(1))
-	}
-	f.Fuzz(func(t *testing.T, input string, width uint16) {
-		parse := func(chunk int) ([]string, error) {
-			r := NewReader(4096)
-			var out []string
-			emit := func(e Event) error { out = append(out, e.Type+"\x00"+string(e.Data)); return nil }
-			for i := 0; i < len(input); i += chunk {
-				if err := r.Feed([]byte(input[i:min(i+chunk, len(input))]), emit); err != nil {
-					return out, err
-				}
-			}
-			return out, r.End()
+// referenceEvents is a whole-input parser independent of Reader's buffering.
+func referenceEvents(input string) []string {
+	input = strings.TrimPrefix(input, "\xef\xbb\xbf")
+	input = strings.ReplaceAll(strings.ReplaceAll(input, "\r\n", "\n"), "\r", "\n")
+	var out, data []string
+	var kind, id string
+	dispatch := func() {
+		if len(data) > 0 {
+			out = append(out, kind+"\x00"+id+"\x00"+strings.Join(data, "\n"))
 		}
-		want, we := parse(max(1, len(input)))
-		got, ge := parse(int(width)%128 + 1)
-		if !reflect.DeepEqual(want, got) || !errors.Is(we, ge) {
-			t.Fatalf("chunk-dependent result: %q %v / %q %v", want, we, got, ge)
+		data = nil
+		kind = ""
+	}
+	lines := strings.Split(input, "\n")
+	for _, line := range lines[:len(lines)-1] {
+		if line == "" {
+			dispatch()
+			continue
+		}
+		field, value, _ := strings.Cut(line, ":")
+		value = strings.TrimPrefix(value, " ")
+		switch field {
+		case "data":
+			data = append(data, value)
+		case "event":
+			kind = value
+		case "id":
+			if !strings.ContainsRune(value, 0) {
+				id = value
+			}
+		}
+	}
+	// The library accepts a complete final terminal marker without a blank line.
+	if (lines[len(lines)-1] == "" || strings.HasPrefix(lines[len(lines)-1], ":")) && len(data) == 1 && data[0] == "[DONE]" {
+		dispatch()
+	}
+	return out
+}
+
+func FuzzReaderChunks(f *testing.F) {
+	for _, s := range []string{"data: one\r\n\r\n", "\xef\xbb\xbfdata: x\rdata: y\r\r", "id: a\ndata:\n\ndata: two\n\n", ": comment\ndata: [DONE]\n"} {
+		f.Add(s, []byte{1, 7, 2})
+	}
+	f.Fuzz(func(t *testing.T, input string, splits []byte) {
+		if len(input) > 16384 {
+			t.Skip()
+		}
+		r := NewReader(-1)
+		var got []string
+		emit := func(e Event) error { got = append(got, e.Type+"\x00"+e.ID+"\x00"+string(e.Data)); return nil }
+		for pos, i := 0, 0; pos < len(input); i++ {
+			width := len(input) - pos
+			if len(splits) > 0 {
+				width = int(splits[i%len(splits)]) + 1
+			}
+			end := min(pos+width, len(input))
+			if err := r.Feed([]byte(input[pos:end]), emit); err != nil {
+				t.Fatal(err)
+			}
+			pos = end
+		}
+		if err := r.End(emit); err != nil {
+			t.Fatal(err)
+		}
+		if want := referenceEvents(input); !reflect.DeepEqual(want, got) {
+			t.Fatalf("oracle %q, incremental %q", want, got)
 		}
 	})
 }

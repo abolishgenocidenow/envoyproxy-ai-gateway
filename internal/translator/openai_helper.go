@@ -16,7 +16,7 @@ import (
 	"github.com/envoyproxy/ai-gateway/internal/internalapi"
 	"github.com/envoyproxy/ai-gateway/internal/json"
 	"github.com/envoyproxy/ai-gateway/internal/ptr"
-	metrics "github.com/envoyproxy/ai-gateway/usage"
+	"github.com/envoyproxy/ai-gateway/usage"
 )
 
 // The following are helper functions for creating an OpenAI ChatCompletionRequest from an Anthropic MessagesRequest
@@ -419,7 +419,7 @@ func openAIResponseToAnthropic(resp *openai.ChatCompletionResponse, model string
 		stopReason = &sr
 	}
 
-	usage := &anthropic.Usage{
+	tokenCounts := &anthropic.Usage{
 		InputTokens:  float64(resp.Usage.PromptTokens),
 		OutputTokens: float64(resp.Usage.CompletionTokens),
 	}
@@ -431,7 +431,7 @@ func openAIResponseToAnthropic(resp *openai.ChatCompletionResponse, model string
 		Content:    content,
 		Model:      model,
 		StopReason: stopReason,
-		Usage:      usage,
+		Usage:      tokenCounts,
 	}
 }
 
@@ -649,7 +649,7 @@ type openAIStreamToAnthropicState struct {
 	stopReason       string // Anthropic stop_reason, mapped from OpenAI finish_reason
 	inputTokens      int
 	outputTokens     int
-	tokenUsage       metrics.TokenUsage
+	tokenUsage       usage.TokenUsage
 	blockIndex       int                       // current Anthropic content block index
 	activeTools      map[int64]*streamToolCall // keyed by OpenAI tool_call index
 	requestModel     string
@@ -741,7 +741,7 @@ func (s *openAIStreamToAnthropicState) handleChunk(chunk *openai.ChatCompletionR
 		// OpenAI's cached_tokens/cache_write_tokens are a breakdown within
 		// prompt_tokens, not additive like Anthropic's native cache fields, so we don't
 		// forward them here to avoid double-counting.
-		s.tokenUsage = metrics.ExtractTokenUsageFromExplicitCaching(
+		s.tokenUsage = usage.ExtractTokenUsageFromExplicitCaching(
 			int64(s.inputTokens),
 			int64(s.outputTokens),
 			ptr.To(int64(0)),

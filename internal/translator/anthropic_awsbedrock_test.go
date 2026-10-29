@@ -18,7 +18,7 @@ import (
 	"github.com/envoyproxy/ai-gateway/internal/apischema/awsbedrock"
 	"github.com/envoyproxy/ai-gateway/internal/json"
 	"github.com/envoyproxy/ai-gateway/internal/ptr"
-	metrics "github.com/envoyproxy/ai-gateway/usage"
+	"github.com/envoyproxy/ai-gateway/usage"
 )
 
 func TestAnthropicToAWSBedrockTranslator_RequestBody(t *testing.T) {
@@ -2066,7 +2066,7 @@ func TestAnthropicToAWSBedrockTranslator_ResponseBody_NullContentBlock(t *testin
 	// A null element in the Converse content list must be skipped, not dereferenced.
 	respBody := []byte(`{"output":{"message":{"role":"assistant","content":[null,{"text":"Hello!"}]}},"stopReason":"end_turn","usage":{"inputTokens":10,"outputTokens":20,"totalTokens":30}}`)
 	var body []byte
-	var tokenUsage metrics.TokenUsage
+	var tokenUsage usage.TokenUsage
 	require.NotPanics(t, func() {
 		_, body, tokenUsage, _, err = translator.ResponseBody(nil, bytes.NewReader(respBody), false, nil)
 	})

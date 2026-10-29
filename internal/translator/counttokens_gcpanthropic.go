@@ -18,7 +18,7 @@ import (
 	"github.com/envoyproxy/ai-gateway/internal/internalapi"
 	"github.com/envoyproxy/ai-gateway/internal/json"
 	"github.com/envoyproxy/ai-gateway/internal/tracing/tracingapi"
-	metrics "github.com/envoyproxy/ai-gateway/usage"
+	"github.com/envoyproxy/ai-gateway/usage"
 )
 
 // NewCountTokensToGCPAnthropicTranslator creates a translator for count_tokens to GCP Anthropic.
@@ -80,7 +80,7 @@ func (t *countTokensToGCPAnthropicTranslator) ResponseHeaders(_ map[string]strin
 
 // ResponseBody implements [AnthropicCountTokensTranslator.ResponseBody].
 func (t *countTokensToGCPAnthropicTranslator) ResponseBody(_ map[string]string, body io.Reader, _ bool, span tracingapi.CountTokensSpan) (
-	newHeaders []internalapi.Header, newBody []byte, tokenUsage metrics.TokenUsage, responseModel internalapi.ResponseModel, err error,
+	newHeaders []internalapi.Header, newBody []byte, tokenUsage usage.TokenUsage, responseModel internalapi.ResponseModel, err error,
 ) {
 	resp := &anthropicschema.CountTokensResponse{}
 	if err := json.NewDecoder(body).Decode(resp); err != nil {

@@ -15,7 +15,7 @@ import (
 	anthropicschema "github.com/envoyproxy/ai-gateway/internal/apischema/anthropic"
 	"github.com/envoyproxy/ai-gateway/internal/internalapi"
 	"github.com/envoyproxy/ai-gateway/internal/json"
-	metrics "github.com/envoyproxy/ai-gateway/usage"
+	"github.com/envoyproxy/ai-gateway/usage"
 )
 
 func TestAnthropicToAnthropic_RequestBody(t *testing.T) {
@@ -400,7 +400,7 @@ func TestAnthropicMessagesTranslators_ResponseBody_non_streaming_withoutUsage(t 
 				_, _, err := translator.RequestBody(reqBody, &req, false)
 				require.NoError(t, err)
 
-				var tokenUsage metrics.TokenUsage
+				var tokenUsage usage.TokenUsage
 				var responseModel internalapi.ResponseModel
 				require.NotPanics(t, func() {
 					_, _, tokenUsage, responseModel, err = translator.ResponseBody(nil, strings.NewReader(tc.body), true, nil)

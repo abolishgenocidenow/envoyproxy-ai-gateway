@@ -6,6 +6,7 @@
 package usage
 
 import (
+	"bytes"
 	"encoding/json" //nolint:depguard // This public observer package intentionally uses only the standard library.
 	"fmt"
 	"math"
@@ -56,10 +57,10 @@ type details struct {
 }
 
 type envelope struct {
-	Usage    *counts   `json:"usage"`
-	Message  *envelope `json:"message"`
-	Response *envelope `json:"response"`
-	Metadata *envelope `json:"metadata"`
+	Usage    *counts         `json:"usage"`
+	Message  *envelope       `json:"message"`
+	Response *envelope       `json:"response"`
+	Metadata json.RawMessage `json:"metadata"`
 	Vertex   *struct {
 		Input     *uint32 `json:"promptTokenCount"`
 		Output    *uint32 `json:"candidatesTokenCount"`
@@ -99,13 +100,37 @@ func (d *Decoder) observe(e envelope) error {
 	if e.Message != nil {
 		c = e.Message.Usage
 	}
-	if e.Metadata != nil {
-		c = e.Metadata.Usage
+	if d.Schema == "AWSBedrock" && len(e.Metadata) != 0 {
+		var metadata struct {
+			Usage json.RawMessage `json:"usage"`
+		}
+		if err := json.Unmarshal(e.Metadata, &metadata); err != nil {
+			return err
+		}
+		if raw := bytes.TrimSpace(metadata.Usage); len(raw) > 0 && raw[0] == '{' {
+			var bedrock counts
+			if err := json.Unmarshal(raw, &bedrock); err != nil {
+				return err
+			}
+			c = &bedrock
+		}
 	}
 	if e.Vertex != nil {
 		v := e.Vertex
 		set(v.Input, d.snapshot.SetInputTokens)
-		set(v.Output, d.snapshot.SetOutputTokens)
+		if v.Output != nil || v.Reasoning != nil {
+			var output uint64
+			if v.Output != nil {
+				output += uint64(*v.Output)
+			}
+			if v.Reasoning != nil {
+				output += uint64(*v.Reasoning)
+			}
+			if output > math.MaxUint32 {
+				return fmt.Errorf("output token count exceeds uint32")
+			}
+			d.snapshot.SetOutputTokens(uint32(output))
+		}
 		set(v.Total, d.snapshot.SetTotalTokens)
 		set(v.Cached, d.snapshot.SetCachedInputTokens)
 		set(v.Reasoning, d.snapshot.SetReasoningTokens)

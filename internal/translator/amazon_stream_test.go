@@ -101,28 +101,78 @@ func TestAmazonStreamManyEventsWithinLimit(t *testing.T) {
 }
 
 func FuzzAmazonStream(f *testing.F) {
-	f.Add([]byte{0, 0, 0, 16}, uint8(1))
-	f.Add(amazonTestFrame(f, "event", []byte(`{}`)), uint8(7))
-	f.Fuzz(func(t *testing.T, data []byte, step uint8) {
-		run := func(chunk int) (int, string) {
-			var pending []byte
-			count := 0
-			for offset := 0; offset < len(data); offset += chunk {
-				end := min(offset+chunk, len(data))
-				err := readAmazonEventStream(bytes.NewReader(data[offset:end]), &pending, 1024, end == len(data), func(eventstream.Message) error { count++; return nil })
-				if cap(pending) > 1024 {
-					t.Fatal("retained buffer exceeded limit")
-				}
-				if err != nil {
-					return count, err.Error()
-				}
+	f.Add([]byte{0, 0, 0, 16}, []byte{1, 3})
+	f.Add(amazonTestFrame(f, "event", []byte(`{}`)), []byte{7, 1, 9})
+	f.Fuzz(func(t *testing.T, data, splits []byte) {
+		// Whole-input oracle uses frame lengths and the SDK decoder directly.
+		count := 0
+		var wantErr error
+		for rest := data; len(rest) > 0; {
+			if len(rest) < 4 {
+				wantErr = io.ErrUnexpectedEOF
+				break
 			}
-			return count, ""
+			size := binary.BigEndian.Uint32(rest[:4])
+			if size < 16 {
+				wantErr = errors.New("invalid frame")
+				break
+			}
+			if size > 1024 {
+				wantErr = ErrAmazonEventTooLarge
+				break
+			}
+			if int(size) > len(rest) {
+				wantErr = io.ErrUnexpectedEOF
+				break
+			}
+			msg, err := eventstream.NewDecoder().Decode(bytes.NewReader(rest[:size]), nil)
+			if err != nil {
+				wantErr = err
+				break
+			}
+			if typ := msg.Headers.Get(":message-type"); typ != nil && (typ.String() == "error" || typ.String() == "exception") {
+				wantErr = &usage.StreamError{Type: typ.String()}
+				break
+			}
+			count++
+			rest = rest[size:]
 		}
-		one, errOne := run(max(1, len(data)))
-		split, errSplit := run(int(step) + 1)
-		if one != split || errOne != errSplit {
-			t.Fatalf("chunk dependent result: %d/%q vs %d/%q", one, errOne, split, errSplit)
+		var pending []byte
+		got := 0
+		var gotErr error
+		for pos, i := 0, 0; pos < len(data); i++ {
+			width := len(data) - pos
+			if len(splits) > 0 {
+				width = int(splits[i%len(splits)]) + 1
+			}
+			end := min(pos+width, len(data))
+			gotErr = readAmazonEventStream(bytes.NewReader(data[pos:end]), &pending, 1024, end == len(data), func(eventstream.Message) error { got++; return nil })
+			if cap(pending) > 1024 {
+				t.Fatal("limit exceeded")
+			}
+			if gotErr != nil {
+				break
+			}
+			pos = end
+		}
+		category := func(err error) string {
+			if err == nil {
+				return "ok"
+			}
+			if errors.Is(err, ErrAmazonEventTooLarge) {
+				return "overflow"
+			}
+			if errors.Is(err, io.ErrUnexpectedEOF) {
+				return "incomplete"
+			}
+			var provider *usage.StreamError
+			if errors.As(err, &provider) {
+				return "provider"
+			}
+			return "invalid"
+		}
+		if count != got || category(wantErr) != category(gotErr) {
+			t.Fatalf("oracle %d/%v incremental %d/%v", count, wantErr, got, gotErr)
 		}
 	})
 }

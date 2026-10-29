@@ -14,7 +14,7 @@ import (
 	"github.com/envoyproxy/ai-gateway/internal/apischema/openai"
 	"github.com/envoyproxy/ai-gateway/internal/internalapi"
 	"github.com/envoyproxy/ai-gateway/internal/json"
-	metrics "github.com/envoyproxy/ai-gateway/usage"
+	"github.com/envoyproxy/ai-gateway/usage"
 )
 
 func TestOpenAIToOpenAITranslatorV1CompletionRequestBody(t *testing.T) {
@@ -109,7 +109,7 @@ func TestOpenAIToOpenAITranslatorV1CompletionResponseBody(t *testing.T) {
 		name           string
 		responseBody   string
 		responseStatus string
-		expTokenUsage  metrics.TokenUsage
+		expTokenUsage  usage.TokenUsage
 		expModel       string
 		expError       bool
 	}{

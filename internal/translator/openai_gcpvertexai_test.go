@@ -25,7 +25,7 @@ import (
 	"github.com/envoyproxy/ai-gateway/internal/internalapi"
 	"github.com/envoyproxy/ai-gateway/internal/json"
 	"github.com/envoyproxy/ai-gateway/internal/ptr"
-	metrics "github.com/envoyproxy/ai-gateway/usage"
+	"github.com/envoyproxy/ai-gateway/usage"
 )
 
 // TestResponseModel_GCPVertexAIStreaming tests that GCP Vertex AI streaming returns the request model
@@ -861,7 +861,7 @@ func TestOpenAIToGCPVertexAITranslatorV1ChatCompletion_ResponseBody(t *testing.T
 		wantError         bool
 		wantHeaderMut     []internalapi.Header
 		wantBodyMut       []byte
-		wantTokenUsage    metrics.TokenUsage
+		wantTokenUsage    usage.TokenUsage
 	}{
 		{
 			name: "successful response",
@@ -1291,7 +1291,7 @@ data: [DONE]
 				t.Errorf("BodyMutation mismatch (-want +got):\n%s", diff)
 			}
 
-			if diff := cmp.Diff(tc.wantTokenUsage, tokenUsage, cmp.AllowUnexported(metrics.TokenUsage{})); diff != "" {
+			if diff := cmp.Diff(tc.wantTokenUsage, tokenUsage, cmp.AllowUnexported(usage.TokenUsage{})); diff != "" {
 				t.Errorf("TokenUsage mismatch (-want +got):\n%s", diff)
 			}
 		})
@@ -1361,7 +1361,7 @@ func TestOpenAIToGCPVertexAITranslatorV1ChatCompletion_StreamingResponseBody(t *
 	tests := []struct {
 		name          string
 		gcpChunk      string
-		expectedUsage metrics.TokenUsage
+		expectedUsage usage.TokenUsage
 		assertBody    func(t *testing.T, bodyStr string)
 	}{
 		{
@@ -2758,7 +2758,7 @@ func TestOpenAIToGCPVertexAITranslatorV1ChatCompletion_ResponseBody_NullBody(t *
 		translator := &openAIToGCPVertexAITranslatorV1ChatCompletion{stream: true}
 		body := "data: null\n\n" +
 			`data: {"candidates":[{"content":{"parts":[{"text":"Hi"}],"role":"model"},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":1,"totalTokenCount":4}}` + "\n\n"
-		var tokenUsage metrics.TokenUsage
+		var tokenUsage usage.TokenUsage
 		var err error
 		require.NotPanics(t, func() {
 			_, _, tokenUsage, _, err = translator.ResponseBody(nil, strings.NewReader(body), true, nil)

@@ -18,7 +18,7 @@ import (
 	"github.com/envoyproxy/ai-gateway/internal/internalapi"
 	"github.com/envoyproxy/ai-gateway/internal/json"
 	"github.com/envoyproxy/ai-gateway/internal/tracing/tracingapi"
-	metrics "github.com/envoyproxy/ai-gateway/usage"
+	"github.com/envoyproxy/ai-gateway/usage"
 )
 
 // NewTokenizeToAWSBedrockTranslator implements [Factory] for tokenize to AWS Bedrock translation.
@@ -194,7 +194,7 @@ func (o *ToAWSBedrockV1Tokenize) ResponseHeaders(map[string]string) (newHeaders 
 // AWS Bedrock uses static model execution without virtualization, where the requested model
 // is exactly what gets executed. We extract token count from the CountTokens response.
 func (o *ToAWSBedrockV1Tokenize) ResponseBody(_ map[string]string, body io.Reader, _ bool, span tracingapi.TokenizeSpan) (
-	newHeaders []internalapi.Header, newBody []byte, tokenUsage metrics.TokenUsage, responseModel string, err error,
+	newHeaders []internalapi.Header, newBody []byte, tokenUsage usage.TokenUsage, responseModel string, err error,
 ) {
 	bedrockResp := &awsbedrock.CountTokensResponse{}
 	if err = json.NewDecoder(body).Decode(bedrockResp); err != nil {
@@ -206,13 +206,13 @@ func (o *ToAWSBedrockV1Tokenize) ResponseBody(_ map[string]string, body io.Reade
 	// Convert to OpenAI format.
 	openAIResp, err := o.bedrockCountTokensToResponse(bedrockResp)
 	if err != nil {
-		return nil, nil, metrics.TokenUsage{}, "", fmt.Errorf("error converting Bedrock response to OpenAI format: %w", err)
+		return nil, nil, usage.TokenUsage{}, "", fmt.Errorf("error converting Bedrock response to OpenAI format: %w", err)
 	}
 
 	// Marshal the OpenAI response.
 	newBody, err = json.Marshal(openAIResp)
 	if err != nil {
-		return nil, nil, metrics.TokenUsage{}, "", fmt.Errorf("error marshaling OpenAI response: %w", err)
+		return nil, nil, usage.TokenUsage{}, "", fmt.Errorf("error marshaling OpenAI response: %w", err)
 	}
 
 	if span != nil {

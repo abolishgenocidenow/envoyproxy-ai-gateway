@@ -18,7 +18,7 @@ import (
 	"github.com/envoyproxy/ai-gateway/internal/internalapi"
 	"github.com/envoyproxy/ai-gateway/internal/json"
 	tracing "github.com/envoyproxy/ai-gateway/internal/tracing/tracingapi"
-	metrics "github.com/envoyproxy/ai-gateway/usage"
+	"github.com/envoyproxy/ai-gateway/usage"
 )
 
 const (
@@ -341,7 +341,7 @@ func (o *openAIToGCPVertexAITranslatorV1Embedding) ResponseHeaders(_ map[string]
 // is exactly what gets executed. The response does not contain a model field, so we return
 // the request model that was originally sent.
 func (o *openAIToGCPVertexAITranslatorV1Embedding) ResponseBody(_ map[string]string, body io.Reader, _ bool, span tracing.EmbeddingsSpan) (
-	newHeaders []internalapi.Header, newBody []byte, tokenUsage metrics.TokenUsage, responseModel internalapi.ResponseModel, err error,
+	newHeaders []internalapi.Header, newBody []byte, tokenUsage usage.TokenUsage, responseModel internalapi.ResponseModel, err error,
 ) {
 	// Read the Gemini embedding response.
 	respBody, err := io.ReadAll(body)
@@ -371,7 +371,7 @@ func (o *openAIToGCPVertexAITranslatorV1Embedding) ResponseBody(_ map[string]str
 		return nil, nil, tokenUsage, "", fmt.Errorf("failed to marshal OpenAI response: %w", err)
 	}
 
-	// Update token usage metrics.
+	// Update token usage usage.
 	tokenUsage.SetInputTokens(uint32(promptTokens)) //nolint:gosec
 	tokenUsage.SetTotalTokens(uint32(promptTokens)) //nolint:gosec
 

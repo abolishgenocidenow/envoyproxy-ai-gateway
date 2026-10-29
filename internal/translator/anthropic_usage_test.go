@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 
 	"github.com/envoyproxy/ai-gateway/internal/ptr"
-	metrics "github.com/envoyproxy/ai-gateway/usage"
+	"github.com/envoyproxy/ai-gateway/usage"
 )
 
 func TestExtractLLMTokenUsage(t *testing.T) {
@@ -104,7 +104,7 @@ func TestExtractLLMTokenUsage(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := metrics.ExtractTokenUsageFromExplicitCaching(
+			result := usage.ExtractTokenUsageFromExplicitCaching(
 				tt.inputTokens,
 				tt.outputTokens,
 				&tt.cacheReadTokens,
@@ -180,7 +180,7 @@ func TestExtractLLMTokenUsageFromUsage(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := metrics.ExtractTokenUsageFromExplicitCaching(tt.usage.InputTokens,
+			result := usage.ExtractTokenUsageFromExplicitCaching(tt.usage.InputTokens,
 				tt.usage.OutputTokens,
 				&tt.usage.CacheReadInputTokens,
 				&tt.usage.CacheCreationInputTokens,
@@ -247,7 +247,7 @@ func TestExtractLLMTokenUsageFromDeltaUsage(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := metrics.ExtractTokenUsageFromExplicitCaching(tt.usage.InputTokens,
+			result := usage.ExtractTokenUsageFromExplicitCaching(tt.usage.InputTokens,
 				tt.usage.OutputTokens,
 				&tt.usage.CacheReadInputTokens,
 				&tt.usage.CacheCreationInputTokens,
@@ -263,7 +263,7 @@ func TestExtractLLMTokenUsage_EdgeCases(t *testing.T) {
 	t.Run("negative values should be handled", func(t *testing.T) {
 		// Note: In practice, the Anthropic API shouldn't return negative values,
 		// but our function should handle them gracefully by casting to uint32.
-		result := metrics.ExtractTokenUsageFromExplicitCaching(-10, -5, ptr.To[int64](-2),
+		result := usage.ExtractTokenUsageFromExplicitCaching(-10, -5, ptr.To[int64](-2),
 			ptr.To[int64](-1))
 
 		// Negative int64 values will wrap around when cast to uint32.
@@ -275,7 +275,7 @@ func TestExtractLLMTokenUsage_EdgeCases(t *testing.T) {
 	t.Run("maximum int64 values", func(t *testing.T) {
 		// Test with very large values to ensure no overflow issues.
 		// Note: This will result in truncation when casting to uint32.
-		result := metrics.ExtractTokenUsageFromExplicitCaching(9223372036854775807, 1000,
+		result := usage.ExtractTokenUsageFromExplicitCaching(9223372036854775807, 1000,
 			ptr.To[int64](500), ptr.To[int64](100))
 		assert.NotNil(t, result)
 	})
@@ -293,7 +293,7 @@ func TestExtractLLMTokenUsage_ClaudeAPIDocumentationCompliance(t *testing.T) {
 		cacheReadTokens := int64(30)
 		outputTokens := int64(50)
 
-		result := metrics.ExtractTokenUsageFromExplicitCaching(inputTokens, outputTokens, &cacheReadTokens, &cacheCreationTokens)
+		result := usage.ExtractTokenUsageFromExplicitCaching(inputTokens, outputTokens, &cacheReadTokens, &cacheCreationTokens)
 
 		// Total input should be sum of all input token types.
 		expectedTotalInputInt := inputTokens + cacheCreationTokens + cacheReadTokens

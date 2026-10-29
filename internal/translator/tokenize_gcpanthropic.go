@@ -20,7 +20,7 @@ import (
 	"github.com/envoyproxy/ai-gateway/internal/internalapi"
 	"github.com/envoyproxy/ai-gateway/internal/json"
 	"github.com/envoyproxy/ai-gateway/internal/tracing/tracingapi"
-	metrics "github.com/envoyproxy/ai-gateway/usage"
+	"github.com/envoyproxy/ai-gateway/usage"
 )
 
 const (
@@ -146,7 +146,7 @@ func (o *ToGCPAnthropicV1Tokenize) ResponseHeaders(map[string]string) (newHeader
 // GCP Anthropic uses deterministic model mapping without virtualization, where the requested model
 // is exactly what gets executed. We extract token count from the token counting response.
 func (o *ToGCPAnthropicV1Tokenize) ResponseBody(_ map[string]string, body io.Reader, _ bool, span tracingapi.TokenizeSpan) (
-	newHeaders []internalapi.Header, newBody []byte, tokenUsage metrics.TokenUsage, responseModel string, err error,
+	newHeaders []internalapi.Header, newBody []byte, tokenUsage usage.TokenUsage, responseModel string, err error,
 ) {
 	anthropicResp := &anthropic.MessageTokensCount{}
 	if err = json.NewDecoder(body).Decode(anthropicResp); err != nil {
@@ -158,13 +158,13 @@ func (o *ToGCPAnthropicV1Tokenize) ResponseBody(_ map[string]string, body io.Rea
 	// Convert to OpenAI format.
 	openAIResp, err := o.anthropicTokensCountToResponse(anthropicResp)
 	if err != nil {
-		return nil, nil, metrics.TokenUsage{}, "", fmt.Errorf("error converting Anthropic response to OpenAI format: %w", err)
+		return nil, nil, usage.TokenUsage{}, "", fmt.Errorf("error converting Anthropic response to OpenAI format: %w", err)
 	}
 
 	// Marshal the OpenAI response.
 	newBody, err = json.Marshal(openAIResp)
 	if err != nil {
-		return nil, nil, metrics.TokenUsage{}, "", fmt.Errorf("error marshaling OpenAI response: %w", err)
+		return nil, nil, usage.TokenUsage{}, "", fmt.Errorf("error marshaling OpenAI response: %w", err)
 	}
 
 	if span != nil {

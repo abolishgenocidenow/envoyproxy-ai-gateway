@@ -13,7 +13,7 @@ import (
 
 	"github.com/envoyproxy/ai-gateway/internal/apischema/openai"
 	"github.com/envoyproxy/ai-gateway/internal/json"
-	metrics "github.com/envoyproxy/ai-gateway/usage"
+	"github.com/envoyproxy/ai-gateway/usage"
 )
 
 func TestOpenAIToOpenAIImageTranslator_RequestBody_ModelOverrideAndPath(t *testing.T) {
@@ -191,7 +191,7 @@ func TestOpenAIToOpenAIImageTranslator_ResponseBody_NullBody(t *testing.T) {
 	require.NoError(t, err)
 
 	mockSpan := &mockImageGenerationSpan{}
-	var usage metrics.TokenUsage
+	var usage usage.TokenUsage
 	var respModel string
 	require.NotPanics(t, func() {
 		_, _, usage, respModel, err = tr.ResponseBody(map[string]string{}, bytes.NewReader([]byte("null")), true, mockSpan)

@@ -17,7 +17,7 @@ import (
 	"github.com/envoyproxy/ai-gateway/internal/internalapi"
 	"github.com/envoyproxy/ai-gateway/internal/json"
 	"github.com/envoyproxy/ai-gateway/internal/tracing/tracingapi"
-	metrics "github.com/envoyproxy/ai-gateway/usage"
+	"github.com/envoyproxy/ai-gateway/usage"
 )
 
 // NewImageGenerationOpenAIToOpenAITranslator implements [Factory] for OpenAI to OpenAI image generation translation.
@@ -47,7 +47,7 @@ func (o *openAIToOpenAIImageGenerationTranslator) RequestBody(original []byte, p
 		}
 	}
 	// Persist the effective model used. The Images endpoint omits model in responses,
-	// so we derive it from the request (or override) for downstream metrics.
+	// so we derive it from the request (or override) for downstream usage.
 	o.requestModel = cmp.Or(o.modelNameOverride, p.Model)
 
 	// Always set the path header to the images generations endpoint so that the request is routed correctly.
@@ -74,7 +74,7 @@ func (o *openAIToOpenAIImageGenerationTranslator) ResponseHeaders(map[string]str
 
 // ResponseBody implements [ImageGenerationTranslator.ResponseBody].
 func (o *openAIToOpenAIImageGenerationTranslator) ResponseBody(_ map[string]string, body io.Reader, _ bool, span tracingapi.ImageGenerationSpan) (
-	newHeaders []internalapi.Header, newBody []byte, tokenUsage metrics.TokenUsage, responseModel internalapi.ResponseModel, err error,
+	newHeaders []internalapi.Header, newBody []byte, tokenUsage usage.TokenUsage, responseModel internalapi.ResponseModel, err error,
 ) {
 	// Decode using OpenAI SDK v2 schema to avoid drift.
 	resp := &openai.ImageGenerationResponse{}

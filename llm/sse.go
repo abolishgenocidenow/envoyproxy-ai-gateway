@@ -22,7 +22,7 @@ var ErrAmazonEventTooLarge = translator.ErrAmazonEventTooLarge
 var ErrDataAfterDone = errors.New("sse data after terminal event")
 
 // ErrMissingTerminal means transport EOF arrived without provider completion.
-var ErrMissingTerminal = errors.New("sse stream ended without a terminal event")
+var ErrMissingTerminal = translator.ErrMissingTerminal
 
 // StreamError is a terminal provider failure received inside a successful HTTP response.
 // Body bytes already sent cannot be recalled. Hosts should classify the attempt
@@ -51,23 +51,26 @@ func (a *Attempt) responseSSE(body []byte, end bool) (result Result, err error) 
 		result.Done = true
 		return result, initErr
 	}
-	err = a.reader.Feed(body, func(event sse.Event) error {
-		if a.streamDone {
+	emit := func(event sse.Event) error {
+		done := bytes.Equal(event.Data, []byte("[DONE]"))
+		if a.streamDone && !done && a.strictSSE {
 			return ErrDataAfterDone
 		}
-		done := bytes.Equal(event.Data, []byte("[DONE]"))
 		terminalErr := usage.CheckError(event.Type, event.Data)
+		invalidUsage := false
 		if !done {
 			if _, observeErr := a.decoder.Observe(event.Data); observeErr != nil {
-				if terminalErr != nil {
-					return terminalErr
-				}
-				return observeErr
+				a.usageError = observeErr
+				invalidUsage = true
 			}
 		}
 
 		// Feed each complete event separately. Legacy translators see canonical LF
 		// framing and one JSON data line, even when upstream JSON spans data fields.
+		translationData := event.Data
+		if invalidUsage && changed != nil {
+			translationData = withoutUsage(event.Data)
+		}
 		var canonical bytes.Buffer
 		if event.Type != "" {
 			canonical.WriteString("event: ")
@@ -77,13 +80,17 @@ func (a *Attempt) responseSSE(body []byte, end bool) (result Result, err error) 
 		canonical.WriteString("data: ")
 		if done {
 			canonical.Write(event.Data)
-		} else if compactErr := json.Compact(&canonical, event.Data); compactErr != nil {
+		} else if compactErr := json.Compact(&canonical, translationData); compactErr != nil {
 			return compactErr
 		}
 		canonical.WriteString("\n\n")
-		headers, changed, _, model, translateErr := a.body(a.responseHeaders, canonical.Bytes(), false)
-		merge(headers, changed, model)
-		a.streamDone = done
+		var translateErr error
+		if !invalidUsage || changed != nil {
+			headers, translated, _, model, bodyErr := a.body(a.responseHeaders, canonical.Bytes(), false)
+			merge(headers, translated, model)
+			translateErr = bodyErr
+		}
+		a.streamDone = a.streamDone || done
 		var terminal struct {
 			Type       string `json:"type"`
 			Candidates []struct {
@@ -116,9 +123,10 @@ func (a *Attempt) responseSSE(body []byte, end bool) (result Result, err error) 
 			return terminalErr
 		}
 		return nil
-	})
+	}
+	err = a.reader.Feed(body, emit)
 	if err == nil && end {
-		err = a.reader.End()
+		err = a.reader.End(emit)
 	}
 	if err == nil && end && !a.terminalSeen {
 		// Audio SSE endpoints use their own terminal event names. Completion checks
@@ -134,6 +142,31 @@ func (a *Attempt) responseSSE(body []byte, end bool) (result Result, err error) 
 	}
 	a.done = end || err != nil
 	a.usage = a.decoder.Snapshot()
-	result.Usage, result.Done = a.usage, a.done
+	result.Usage, result.Done, result.UsageError = a.usage, a.done, a.usageError
+	var providerErr *StreamError
+	if errors.As(err, &providerErr) && result.Body == nil {
+		result.Body = bytes.Clone(body)
+	}
 	return result, err
+}
+
+// withoutUsage lets content translation continue after a bad usage observation.
+// The original event bytes remain untouched for passthrough responses.
+func withoutUsage(data []byte) []byte {
+	var object map[string]json.RawMessage
+	if json.Unmarshal(data, &object) != nil {
+		return data
+	}
+	delete(object, "usage")
+	delete(object, "usageMetadata")
+	for _, key := range []string{"message", "response", "metadata"} {
+		if raw, ok := object[key]; ok {
+			object[key] = withoutUsage(raw)
+		}
+	}
+	clean, err := json.Marshal(object)
+	if err != nil {
+		return data
+	}
+	return clean
 }

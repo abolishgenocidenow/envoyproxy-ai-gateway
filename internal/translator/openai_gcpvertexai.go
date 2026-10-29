@@ -24,7 +24,7 @@ import (
 	"github.com/envoyproxy/ai-gateway/internal/ptr"
 	"github.com/envoyproxy/ai-gateway/internal/redaction"
 	"github.com/envoyproxy/ai-gateway/internal/tracing/tracingapi"
-	metrics "github.com/envoyproxy/ai-gateway/usage"
+	"github.com/envoyproxy/ai-gateway/usage"
 )
 
 const (
@@ -148,7 +148,7 @@ func (o *openAIToGCPVertexAITranslatorV1ChatCompletion) ResponseHeaders(_ map[st
 // is exactly what gets executed. The response does not contain a model field, so we return
 // the request model that was originally sent.
 func (o *openAIToGCPVertexAITranslatorV1ChatCompletion) ResponseBody(_ map[string]string, body io.Reader, endOfStream bool, span tracingapi.ChatCompletionSpan) (
-	newHeaders []internalapi.Header, newBody []byte, tokenUsage metrics.TokenUsage, responseModel string, err error,
+	newHeaders []internalapi.Header, newBody []byte, tokenUsage usage.TokenUsage, responseModel string, err error,
 ) {
 	if o.stream {
 		return o.handleStreamingResponse(body, endOfStream, span)
@@ -159,7 +159,7 @@ func (o *openAIToGCPVertexAITranslatorV1ChatCompletion) ResponseBody(_ map[strin
 	// UnmarshalJSON, which dereferences a nil pointer on null. Treat it as an empty response.
 	var gcpResp *genai.GenerateContentResponse
 	if err = json.NewDecoder(body).Decode(&gcpResp); err != nil {
-		return nil, nil, metrics.TokenUsage{}, "", fmt.Errorf("error decoding GCP response: %w", err)
+		return nil, nil, usage.TokenUsage{}, "", fmt.Errorf("error decoding GCP response: %w", err)
 	}
 	if gcpResp == nil {
 		gcpResp = &genai.GenerateContentResponse{}
@@ -174,7 +174,7 @@ func (o *openAIToGCPVertexAITranslatorV1ChatCompletion) ResponseBody(_ map[strin
 	// Convert to OpenAI format.
 	openAIResp, err := o.geminiResponseToOpenAIMessage(gcpResp, responseModel)
 	if err != nil {
-		return nil, nil, metrics.TokenUsage{}, "", fmt.Errorf("error converting GCP response to OpenAI format: %w", err)
+		return nil, nil, usage.TokenUsage{}, "", fmt.Errorf("error converting GCP response to OpenAI format: %w", err)
 	}
 
 	// Redact and log response when enabled
@@ -188,7 +188,7 @@ func (o *openAIToGCPVertexAITranslatorV1ChatCompletion) ResponseBody(_ map[strin
 	// Marshal the OpenAI response.
 	newBody, err = json.Marshal(openAIResp)
 	if err != nil {
-		return nil, nil, metrics.TokenUsage{}, "", fmt.Errorf("error marshaling OpenAI response: %w", err)
+		return nil, nil, usage.TokenUsage{}, "", fmt.Errorf("error marshaling OpenAI response: %w", err)
 	}
 
 	// Update token usage if available.
@@ -211,13 +211,13 @@ func (o *openAIToGCPVertexAITranslatorV1ChatCompletion) ResponseBody(_ map[strin
 
 // handleStreamingResponse handles streaming responses from GCP Gemini API.
 func (o *openAIToGCPVertexAITranslatorV1ChatCompletion) handleStreamingResponse(body io.Reader, endOfStream bool, span tracingapi.ChatCompletionSpan) (
-	newHeaders []internalapi.Header, newBody []byte, tokenUsage metrics.TokenUsage, responseModel string, err error,
+	newHeaders []internalapi.Header, newBody []byte, tokenUsage usage.TokenUsage, responseModel string, err error,
 ) {
 	responseModel = o.requestModel
 	// Parse GCP streaming chunks from buffered body and current input.
 	chunks, err := o.parseGCPStreamingChunks(body)
 	if err != nil {
-		return nil, nil, metrics.TokenUsage{}, "", fmt.Errorf("error parsing GCP streaming chunks: %w", err)
+		return nil, nil, usage.TokenUsage{}, "", fmt.Errorf("error parsing GCP streaming chunks: %w", err)
 	}
 
 	for i := range chunks {
@@ -228,7 +228,7 @@ func (o *openAIToGCPVertexAITranslatorV1ChatCompletion) handleStreamingResponse(
 		// Serialize to SSE format as expected by OpenAI API.
 		err := serializeOpenAIChatCompletionChunk(openAIChunk, &newBody)
 		if err != nil {
-			return nil, nil, metrics.TokenUsage{}, "", fmt.Errorf("error marshaling OpenAI chunk: %w", err)
+			return nil, nil, usage.TokenUsage{}, "", fmt.Errorf("error marshaling OpenAI chunk: %w", err)
 		}
 
 		if span != nil {
@@ -238,7 +238,7 @@ func (o *openAIToGCPVertexAITranslatorV1ChatCompletion) handleStreamingResponse(
 		// Extract token usage only in the last chunk.
 		if chunk.UsageMetadata != nil && chunk.UsageMetadata.PromptTokenCount > 0 {
 			// Convert usage to pointer if available.
-			usage := ptr.To(geminiUsageToOpenAIUsage(chunk.UsageMetadata))
+			tokenCounts := ptr.To(geminiUsageToOpenAIUsage(chunk.UsageMetadata))
 
 			usageChunk := &openai.ChatCompletionResponseChunk{
 				ID:      chunk.ResponseID,
@@ -246,25 +246,25 @@ func (o *openAIToGCPVertexAITranslatorV1ChatCompletion) handleStreamingResponse(
 				Object:  "chat.completion.chunk",
 				Choices: []openai.ChatCompletionResponseChunkChoice{},
 				// usage is nil for all chunks other than the last chunk
-				Usage: usage,
+				Usage: tokenCounts,
 				Model: o.requestModel,
 			}
 
 			// Serialize to SSE format as expected by OpenAI API.
 			err := serializeOpenAIChatCompletionChunk(usageChunk, &newBody)
 			if err != nil {
-				return nil, nil, metrics.TokenUsage{}, "", fmt.Errorf("error marshaling OpenAI chunk: %w", err)
+				return nil, nil, usage.TokenUsage{}, "", fmt.Errorf("error marshaling OpenAI chunk: %w", err)
 			}
 
 			if span != nil {
 				span.RecordResponseChunk(usageChunk)
 			}
 
-			tokenUsage.SetInputTokens(uint32(usage.PromptTokens))                                //nolint:gosec
-			tokenUsage.SetOutputTokens(uint32(usage.CompletionTokens))                           //nolint:gosec
-			tokenUsage.SetTotalTokens(uint32(usage.TotalTokens))                                 //nolint:gosec
-			tokenUsage.SetCachedInputTokens(uint32(usage.PromptTokensDetails.CachedTokens))      //nolint:gosec
-			tokenUsage.SetReasoningTokens(uint32(usage.CompletionTokensDetails.ReasoningTokens)) //nolint:gosec
+			tokenUsage.SetInputTokens(uint32(tokenCounts.PromptTokens))                                //nolint:gosec
+			tokenUsage.SetOutputTokens(uint32(tokenCounts.CompletionTokens))                           //nolint:gosec
+			tokenUsage.SetTotalTokens(uint32(tokenCounts.TotalTokens))                                 //nolint:gosec
+			tokenUsage.SetCachedInputTokens(uint32(tokenCounts.PromptTokensDetails.CachedTokens))      //nolint:gosec
+			tokenUsage.SetReasoningTokens(uint32(tokenCounts.CompletionTokensDetails.ReasoningTokens)) //nolint:gosec
 		}
 	}
 

@@ -23,7 +23,7 @@ import (
 	"github.com/envoyproxy/ai-gateway/internal/ptr"
 	"github.com/envoyproxy/ai-gateway/internal/redaction"
 	"github.com/envoyproxy/ai-gateway/internal/tracing/tracingapi"
-	metrics "github.com/envoyproxy/ai-gateway/usage"
+	"github.com/envoyproxy/ai-gateway/usage"
 )
 
 // NewAnthropicToAnthropicTranslator creates a passthrough translator for Anthropic.
@@ -44,7 +44,7 @@ type anthropicToAnthropicTranslator struct {
 	stream                 bool
 	buffered               []byte
 	streamingResponseModel internalapi.ResponseModel
-	streamingTokenUsage    metrics.TokenUsage
+	streamingTokenUsage    usage.TokenUsage
 	// Redaction configuration for debug logging
 	debugLogEnabled bool
 	enableRedaction bool
@@ -96,7 +96,7 @@ func (a *anthropicToAnthropicTranslator) ResponseHeaders(_ map[string]string) (
 
 // ResponseBody implements [AnthropicMessagesTranslator.ResponseBody].
 func (a *anthropicToAnthropicTranslator) ResponseBody(_ map[string]string, body io.Reader, _ bool, span tracingapi.MessageSpan) (
-	newHeaders []internalapi.Header, newBody []byte, tokenUsage metrics.TokenUsage, responseModel string, err error,
+	newHeaders []internalapi.Header, newBody []byte, tokenUsage usage.TokenUsage, responseModel string, err error,
 ) {
 	if a.stream {
 		var buf []byte
@@ -128,12 +128,12 @@ func (a *anthropicToAnthropicTranslator) ResponseBody(_ map[string]string, body 
 
 	// Usage is optional in the schema. A response without it (including a JSON `null` or `{}`
 	// body, which decodes without an error) reports no usage, as the streaming path does.
-	if usage := anthropicResp.Usage; usage != nil {
-		tokenUsage = metrics.ExtractTokenUsageFromExplicitCaching(
-			int64(usage.InputTokens),
-			int64(usage.OutputTokens),
-			ptr.To(int64(usage.CacheReadInputTokens)),
-			ptr.To(int64(usage.CacheCreationInputTokens)),
+	if tokenCounts := anthropicResp.Usage; tokenCounts != nil {
+		tokenUsage = usage.ExtractTokenUsageFromExplicitCaching(
+			int64(tokenCounts.InputTokens),
+			int64(tokenCounts.OutputTokens),
+			ptr.To(int64(tokenCounts.CacheReadInputTokens)),
+			ptr.To(int64(tokenCounts.CacheCreationInputTokens)),
 		)
 	}
 	if span != nil {
@@ -180,7 +180,7 @@ func (a *anthropicToAnthropicTranslator) reflectStreamingEvent(eventUnion *anthr
 		}
 		// Extract usage from message_start event - this sets the baseline input tokens
 		if u := message.Usage; u != nil {
-			messageStartUsage := metrics.ExtractTokenUsageFromExplicitCaching(
+			messageStartUsage := usage.ExtractTokenUsageFromExplicitCaching(
 				int64(u.InputTokens),
 				int64(u.OutputTokens),
 				ptr.To(int64(u.CacheReadInputTokens)),

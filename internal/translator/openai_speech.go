@@ -18,7 +18,7 @@ import (
 	"github.com/envoyproxy/ai-gateway/internal/internalapi"
 	"github.com/envoyproxy/ai-gateway/internal/json"
 	"github.com/envoyproxy/ai-gateway/internal/tracing/tracingapi"
-	metrics "github.com/envoyproxy/ai-gateway/usage"
+	"github.com/envoyproxy/ai-gateway/usage"
 )
 
 // NewSpeechOpenAIToOpenAITranslator implements [OpenAISpeechTranslator] for OpenAI to OpenAI translation for speech.
@@ -83,7 +83,7 @@ func (o *openAIToOpenAITranslatorV1Speech) ResponseHeaders(_ map[string]string) 
 // ResponseBody implements [OpenAISpeechTranslator.ResponseBody].
 // Speech responses are either binary audio or SSE streaming chunks.
 func (o *openAIToOpenAITranslatorV1Speech) ResponseBody(_ map[string]string, body io.Reader, _ bool, span tracingapi.SpeechSpan) (
-	newHeaders []internalapi.Header, newBody []byte, tokenUsage metrics.TokenUsage, responseModel internalapi.ResponseModel, err error,
+	newHeaders []internalapi.Header, newBody []byte, tokenUsage usage.TokenUsage, responseModel internalapi.ResponseModel, err error,
 ) {
 	if o.stream {
 		// Handle SSE streaming response
@@ -96,7 +96,7 @@ func (o *openAIToOpenAITranslatorV1Speech) ResponseBody(_ map[string]string, bod
 
 // handleStreamingResponse handles SSE streaming responses from the Speech API.
 func (o *openAIToOpenAITranslatorV1Speech) handleStreamingResponse(body io.Reader, span tracingapi.SpeechSpan) (
-	newHeaders []internalapi.Header, newBody []byte, tokenUsage metrics.TokenUsage, responseModel string, err error,
+	newHeaders []internalapi.Header, newBody []byte, tokenUsage usage.TokenUsage, responseModel string, err error,
 ) {
 	// Buffer the incoming SSE data
 	chunks, err := io.ReadAll(body)
@@ -118,7 +118,7 @@ func (o *openAIToOpenAITranslatorV1Speech) handleStreamingResponse(body io.Reade
 
 // handleBinaryResponse handles binary audio responses from the Speech API.
 func (o *openAIToOpenAITranslatorV1Speech) handleBinaryResponse(body io.Reader, span tracingapi.SpeechSpan) (
-	newHeaders []internalapi.Header, newBody []byte, tokenUsage metrics.TokenUsage, responseModel string, err error,
+	newHeaders []internalapi.Header, newBody []byte, tokenUsage usage.TokenUsage, responseModel string, err error,
 ) {
 	// Read the binary audio data
 	audioData, err := io.ReadAll(body)
