@@ -27,7 +27,10 @@ var ErrAmazonEventTooLarge = errors.New("amazon event exceeds configured limit")
 // response. The limit includes the binary envelope. CRC errors are fatal and a
 // partial frame at transport EOF is distinguished from a callback boundary.
 func readAmazonEventStream(r io.Reader, pending *[]byte, limit int, end bool, emit func(eventstream.Message) error) error {
-	if limit <= 0 {
+	if limit < 0 {
+		limit = int(^uint(0) >> 1)
+	}
+	if limit == 0 {
 		limit = defaultAmazonEventLimit
 	}
 	var scratch [4096]byte

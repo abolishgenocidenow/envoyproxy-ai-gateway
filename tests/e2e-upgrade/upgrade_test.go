@@ -24,7 +24,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/envoyproxy/ai-gateway/internal/controller"
-	"github.com/envoyproxy/ai-gateway/internal/filterapi"
 	"github.com/envoyproxy/ai-gateway/internal/filterconfig"
 	"github.com/envoyproxy/ai-gateway/tests/internal/e2elib"
 	"github.com/envoyproxy/ai-gateway/tests/internal/testupstreamlib"

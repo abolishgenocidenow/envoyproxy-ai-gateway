@@ -51,9 +51,10 @@ type Input struct {
 	Headers      map[string]string
 	Body         []byte
 	IncludeUsage bool
-	// SSELimit bounds a retained SSE event or AWS binary frame. Nonpositive values use sse.DefaultLimit.
+	// SSELimit bounds a retained SSE event or AWS binary frame. Nonpositive values are unbounded.
+	// Hosts that need a cap must set a positive limit explicitly.
 	SSELimit int
-	// StrictSSE reports incomplete events and data after a terminal event.
+	// StrictSSE rejects non-JSON data, incomplete events and data after a terminal event.
 	StrictSSE bool
 }
 
@@ -147,7 +148,11 @@ func capture[Req, Resp, Chunk any](spec endpointspec.Spec[Req, Resp, Chunk], inp
 			return nil, Mutation{}, err
 		}
 		if setter, ok := tr.(interface{ SetStreamLimit(int) }); ok {
-			setter.SetStreamLimit(input.SSELimit)
+			limit := input.SSELimit
+			if limit <= 0 {
+				limit = -1
+			}
+			setter.SetStreamLimit(limit)
 		}
 		headers := maps.Clone(originalHeaders)
 		if setter, ok := tr.(translator.ContentTypeSetter); ok {
@@ -195,7 +200,11 @@ func capture[Req, Resp, Chunk any](spec endpointspec.Spec[Req, Resp, Chunk], inp
 			return nil, Mutation{}, err
 		}
 		attempts++
-		attempt := &Attempt{streaming: stream, reader: sse.NewReader(max(0, input.SSELimit)), decoder: usage.Decoder{Schema: string(backend.Schema.Name)}}
+		limit := input.SSELimit
+		if limit <= 0 {
+			limit = -1
+		}
+		attempt := &Attempt{streaming: stream, reader: sse.NewReader(limit), decoder: usage.Decoder{Schema: string(backend.Schema.Name)}}
 		switch any(spec).(type) {
 		case endpointspec.ChatCompletionsEndpointSpec, endpointspec.CompletionsEndpointSpec, endpointspec.ResponsesEndpointSpec, endpointspec.MessagesEndpointSpec:
 			attempt.requireTerminal = true
@@ -226,7 +235,7 @@ type Result struct {
 	Usage   Usage
 	Model   string
 	Done    bool
-	// UsageError reports invalid streaming usage without interrupting forwarding.
+	// UsageError reports invalid usage without interrupting forwarding.
 	// It is sticky for the attempt. Hosts must treat Usage as invalid when it is non-nil.
 	UsageError error
 }
@@ -293,14 +302,25 @@ func (a *Attempt) ResponseBody(body []byte, end bool) (Result, error) {
 		return a.responseSSE(body, end)
 	}
 	headers, changed, usage, model, err := a.body(a.responseHeaders, body, end)
+	if !a.streaming && a.observeUsage && err != nil {
+		// A legacy translator may reject malformed usage before translating content.
+		// Retry without usage, retaining the original bytes for passthrough responses.
+		clean := withoutUsage(body)
+		if !bytes.Equal(clean, body) {
+			h, b, u, m, retryErr := a.body(a.responseHeaders, clean, end)
+			if retryErr == nil {
+				headers, changed, usage, model, err = h, b, u, m, nil
+			}
+		}
+	}
 	if !a.streaming && a.observeUsage && err == nil {
 		observed, observeErr := a.decoder.Observe(body)
 		usage.Override(observed)
 		if observeErr != nil {
-			err = observeErr
+			a.usageError = observeErr
 		}
 	}
 	a.done = end || err != nil
 	a.usage.Override(usage)
-	return Result{Headers: headers, Body: changed, Usage: a.usage, Model: model, Done: a.done}, err
+	return Result{Headers: headers, Body: changed, Usage: a.usage, Model: model, Done: a.done, UsageError: a.usageError}, err
 }

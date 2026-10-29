@@ -56,7 +56,10 @@ func (a *Attempt) responseSSE(body []byte, end bool) (result Result, err error) 
 		if a.streamDone && !done && a.strictSSE {
 			return ErrDataAfterDone
 		}
-		terminalErr := usage.CheckError(event.Type, event.Data)
+		var terminalErr error
+		if done || json.Valid(event.Data) || a.strictSSE {
+			terminalErr = usage.CheckError(event.Type, event.Data)
+		}
 		invalidUsage := false
 		if !done {
 			if _, observeErr := a.decoder.Observe(event.Data); observeErr != nil {
@@ -68,6 +71,9 @@ func (a *Attempt) responseSSE(body []byte, end bool) (result Result, err error) 
 		// Feed each complete event separately. Legacy translators see canonical LF
 		// framing and one JSON data line, even when upstream JSON spans data fields.
 		translationData := event.Data
+		if changed != nil {
+			translationData = withLenientUsage(event.Data)
+		}
 		if invalidUsage && changed != nil {
 			translationData = withoutUsage(event.Data)
 		}
@@ -81,9 +87,21 @@ func (a *Attempt) responseSSE(body []byte, end bool) (result Result, err error) 
 		if done {
 			canonical.Write(event.Data)
 		} else if compactErr := json.Compact(&canonical, translationData); compactErr != nil {
-			return compactErr
+			if a.strictSSE {
+				return compactErr
+			}
+			// Opaque data is an observation failure, not a forwarding failure.
+			canonical.Write(translationData)
 		}
 		canonical.WriteString("\n\n")
+		if !done && !json.Valid(event.Data) {
+			// Translation cannot interpret opaque provider data. Keep the event in the
+			// output while the observer records why its usage could not be inspected.
+			if changed != nil {
+				merge(nil, canonical.Bytes(), "")
+			}
+			return nil
+		}
 		var translateErr error
 		if !invalidUsage || changed != nil {
 			headers, translated, _, model, bodyErr := a.body(a.responseHeaders, canonical.Bytes(), false)
@@ -99,7 +117,9 @@ func (a *Attempt) responseSSE(body []byte, end bool) (result Result, err error) 
 		}
 		if !done {
 			if decodeErr := json.Unmarshal(event.Data, &terminal); decodeErr != nil {
-				return decodeErr
+				if a.strictSSE {
+					return decodeErr
+				}
 			}
 		}
 		switch terminal.Type {
@@ -169,4 +189,55 @@ func withoutUsage(data []byte) []byte {
 		return data
 	}
 	return clean
+}
+
+// withLenientUsage removes nonnumeric usage fields before legacy typed
+// translators inspect them. The observer still receives the original payload.
+func withLenientUsage(data []byte) []byte {
+	var object map[string]json.RawMessage
+	if json.Unmarshal(data, &object) != nil {
+		return data
+	}
+	for _, key := range []string{"usage", "usageMetadata"} {
+		if raw, ok := object[key]; ok {
+			var fields map[string]json.RawMessage
+			if json.Unmarshal(raw, &fields) != nil {
+				delete(object, key)
+				continue
+			}
+			cleanUsageFields(fields)
+			clean, err := json.Marshal(fields)
+			if err != nil {
+				return data
+			}
+			object[key] = clean
+		}
+	}
+	for _, key := range []string{"message", "response", "metadata"} {
+		if raw, ok := object[key]; ok {
+			object[key] = withLenientUsage(raw)
+		}
+	}
+	clean, err := json.Marshal(object)
+	if err != nil {
+		return data
+	}
+	return clean
+}
+
+func cleanUsageFields(fields map[string]json.RawMessage) {
+	for key, raw := range fields {
+		var nested map[string]json.RawMessage
+		if len(raw) > 0 && raw[0] == '{' && json.Unmarshal(raw, &nested) == nil {
+			cleanUsageFields(nested)
+			if clean, err := json.Marshal(nested); err == nil {
+				fields[key] = clean
+			}
+			continue
+		}
+		var count *uint32
+		if json.Unmarshal(raw, &count) != nil {
+			delete(fields, key)
+		}
+	}
 }

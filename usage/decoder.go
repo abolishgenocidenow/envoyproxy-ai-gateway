@@ -61,18 +61,75 @@ type envelope struct {
 	Message  *envelope       `json:"message"`
 	Response *envelope       `json:"response"`
 	Metadata json.RawMessage `json:"metadata"`
-	Vertex   *struct {
-		Input     *uint32 `json:"promptTokenCount"`
-		Output    *uint32 `json:"candidatesTokenCount"`
-		Total     *uint32 `json:"totalTokenCount"`
-		Cached    *uint32 `json:"cachedContentTokenCount"`
-		Reasoning *uint32 `json:"thoughtsTokenCount"`
-	} `json:"usageMetadata"`
+	Vertex   *vertexCounts   `json:"usageMetadata"`
+}
+
+type vertexCounts struct {
+	Input     *uint32 `json:"promptTokenCount"`
+	Output    *uint32 `json:"candidatesTokenCount"`
+	Total     *uint32 `json:"totalTokenCount"`
+	Cached    *uint32 `json:"cachedContentTokenCount"`
+	Reasoning *uint32 `json:"thoughtsTokenCount"`
+}
+
+// decodeObject ignores fields of unrelated JSON types. Numeric values still go
+// through uint32 decoding so negative, fractional and overflowing counts fail.
+func decodeObject(data []byte, target any, numeric bool, objects ...string) error {
+	var fields map[string]json.RawMessage
+	if !json.Valid(data) {
+		return fmt.Errorf("invalid provider JSON")
+	}
+	if raw := bytes.TrimSpace(data); len(raw) == 0 || raw[0] != '{' {
+		return nil
+	}
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	for key, value := range fields {
+		raw := bytes.TrimSpace(value)
+		object := false
+		for _, name := range objects {
+			object = object || key == name
+		}
+		if object {
+			if len(raw) == 0 || raw[0] != '{' {
+				delete(fields, key)
+			}
+		} else if numeric && (len(raw) == 0 || (raw[0] != '-' && (raw[0] < '0' || raw[0] > '9'))) {
+			delete(fields, key)
+		}
+	}
+	clean, err := json.Marshal(fields)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(clean, target)
+}
+
+func (e *envelope) UnmarshalJSON(data []byte) error {
+	type plain envelope
+	return decodeObject(data, (*plain)(e), false, "usage", "message", "response", "usageMetadata", "metadata")
+}
+
+func (c *counts) UnmarshalJSON(data []byte) error {
+	type plain counts
+	return decodeObject(data, (*plain)(c), true, "prompt_tokens_details", "completion_tokens_details", "input_tokens_details", "output_tokens_details")
+}
+
+func (d *details) UnmarshalJSON(data []byte) error {
+	type plain details
+	return decodeObject(data, (*plain)(d), true)
+}
+
+func (v *vertexCounts) UnmarshalJSON(data []byte) error {
+	type plain vertexCounts
+	return decodeObject(data, (*plain)(v), true)
 }
 
 // Observe consumes one complete provider JSON object. Invalid JSON, negative
 // counts, values larger than uint32 and normalized-count overflow return errors
-// without changing the previous snapshot. Unknown fields are ignored.
+// without changing the previous snapshot. Unknown fields and fields with unrelated
+// JSON types are ignored, preserving previously observed counts.
 func (d *Decoder) Observe(data []byte) (TokenUsage, error) {
 	var e envelope
 	if err := json.Unmarshal(data, &e); err != nil {

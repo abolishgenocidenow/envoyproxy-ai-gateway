@@ -44,8 +44,8 @@ func TestReviewInvalidUsageDoesNotAbort(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if r.UsageError == nil {
-				t.Fatal("usage not marked invalid")
+			if (r.UsageError != nil) != (value == "-1") {
+				t.Fatalf("usage error %v for %s", r.UsageError, value)
 			}
 		})
 	}
@@ -57,7 +57,7 @@ func TestReviewTranslatedInvalidUsageDoesNotAbort(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r.UsageError == nil || !bytes.Contains(r.Body, []byte("hello")) {
+	if r.UsageError != nil || !bytes.Contains(r.Body, []byte("hello")) {
 		t.Fatalf("body %q usage error %v", r.Body, r.UsageError)
 	}
 }

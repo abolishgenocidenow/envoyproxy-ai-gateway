@@ -36,14 +36,15 @@ var (
 // sseEventParser reads bytes from a reader and parses the SSE Events gracefully
 // handling the different line terminations: CR, LF, CRLF.
 type sseEventParser struct {
-	backend  filterapi.MCPBackendName
-	r        io.Reader
-	readBuf  [4096]byte
-	framing  sse.Reader
-	queue    []*sseEvent
-	pos, n   int
-	readErr  error
-	parseErr error
+	backend    filterapi.MCPBackendName
+	r          io.Reader
+	readBuf    [4096]byte
+	framing    sse.Reader
+	queue      []*sseEvent
+	pos, n     int
+	readErr    error
+	parseErr   error
+	skipNonRPC bool
 }
 
 func newSSEEventParser(r io.Reader, backend filterapi.MCPBackendName, limits ...int) sseEventParser {
@@ -98,6 +99,9 @@ func (s *sseEventParser) next() (*sseEvent, error) {
 		if len(bytes.TrimSpace(e.Data)) != 0 {
 			msg, err := jsonrpc.DecodeMessage(e.Data)
 			if err != nil {
+				if s.skipNonRPC {
+					return nil
+				}
 				return fmt.Errorf("failed to decode jsonrpc message from sse data: %w", err)
 			}
 			ret.messages = []jsonrpc.Message{msg}
@@ -205,6 +209,7 @@ func readResponseBody(r io.Reader, limits ...int) ([]byte, error) {
 // are consumed incrementally. The terminal response need not wait for HTTP EOF.
 func readSSEJSONResponse(r io.Reader, limits ...int) ([]byte, error) {
 	parser := newSSEEventParser(r, "", limits...)
+	parser.skipNonRPC = true
 	for {
 		event, err := parser.next()
 		if err != nil {

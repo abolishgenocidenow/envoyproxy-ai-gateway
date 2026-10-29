@@ -249,3 +249,31 @@ func TestAWSStreamingUsagePresence(t *testing.T) {
 		})
 	}
 }
+
+func TestAmazonStreamUnboundedLimit(t *testing.T) {
+	payload := bytes.Repeat([]byte("x"), 2<<20)
+	frame := amazonTestFrame(t, "event", payload)
+	for _, tc := range []struct {
+		name  string
+		limit int
+		want  error
+	}{
+		{"unbounded", -1, nil},
+		{"explicit cap", 1 << 20, ErrAmazonEventTooLarge},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var pending []byte
+			seen := false
+			err := readAmazonEventStream(bytes.NewReader(frame), &pending, tc.limit, true, func(msg eventstream.Message) error {
+				seen = true
+				if !bytes.Equal(msg.Payload, payload) {
+					t.Fatal("payload changed")
+				}
+				return nil
+			})
+			if !errors.Is(err, tc.want) || seen != (tc.want == nil) {
+				t.Fatalf("seen=%v error=%v", seen, err)
+			}
+		})
+	}
+}
