@@ -399,5 +399,3 @@ type HTTPBodyField struct {
 	// The value will be parsed as JSON and inserted at the specified field.
 	Value string `json:"value"`
 }
-
-// UnmarshalConfigYaml reads the file at the given path and unmarshals it into a Config struct.

@@ -14,6 +14,7 @@ import (
 	"github.com/envoyproxy/ai-gateway/internal/filterapi"
 )
 
+// UnmarshalConfigYaml reads the file at the given path and unmarshals it into a Config struct.
 func UnmarshalConfigYaml(path string) (*filterapi.Config, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
