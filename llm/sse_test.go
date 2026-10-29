@@ -128,3 +128,37 @@ func TestSSEProviderMatrix(t *testing.T) {
 		})
 	}
 }
+
+func TestBufferedEmbeddingsUsagePresence(t *testing.T) {
+	for _, tt := range []struct {
+		name, counts string
+		present      bool
+	}{
+		{"missing", "{}", false},
+		{"zero", `{"prompt_tokens":0}`, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			request, err := NewRequest("/v1/embeddings", Input{Body: []byte(`{"model":"test","input":"hi"}`)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			attempt, _, err := request.NewAttempt(t.Context(), Backend{Schema: Schema{Name: "OpenAI"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err = attempt.ResponseHeaders(200, map[string]string{"content-type": "application/json"}); err != nil {
+				t.Fatal(err)
+			}
+			result, err := attempt.ResponseBody([]byte(`{"model":"test","data":[],"usage":`+tt.counts+`}`), true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if n, present := result.Usage.InputTokens(); n != 0 || present != tt.present {
+				t.Fatalf("input %d %v", n, present)
+			}
+			if _, present := result.Usage.OutputTokens(); present {
+				t.Fatal("missing output became present")
+			}
+		})
+	}
+}

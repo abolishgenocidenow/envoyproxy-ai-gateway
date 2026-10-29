@@ -197,6 +197,9 @@ func capture[Req, Resp, Chunk any](spec endpointspec.Spec[Req, Resp, Chunk], inp
 		switch any(spec).(type) {
 		case endpointspec.ChatCompletionsEndpointSpec, endpointspec.CompletionsEndpointSpec, endpointspec.ResponsesEndpointSpec, endpointspec.MessagesEndpointSpec:
 			attempt.requireTerminal = true
+			attempt.observeUsage = true
+		case endpointspec.EmbeddingsEndpointSpec, endpointspec.ImageGenerationEndpointSpec, endpointspec.DecisionsEndpointSpec:
+			attempt.observeUsage = true
 		}
 		attempt.headers = tr.ResponseHeaders
 		attempt.body = func(headers map[string]string, body []byte, end bool) ([]Header, []byte, Usage, string, error) {
@@ -236,6 +239,7 @@ type Attempt struct {
 	streamDone      bool
 	terminalSeen    bool
 	requireTerminal bool
+	observeUsage    bool
 }
 
 // ResponseHeaders starts response translation. The host must decode content
@@ -280,7 +284,7 @@ func (a *Attempt) ResponseBody(body []byte, end bool) (Result, error) {
 		return a.responseSSE(body, end)
 	}
 	headers, changed, usage, model, err := a.body(a.responseHeaders, body, end)
-	if !a.streaming && a.requireTerminal && err == nil {
+	if !a.streaming && a.observeUsage && err == nil {
 		observed, observeErr := a.decoder.Observe(body)
 		usage = observed
 		if observeErr != nil {
