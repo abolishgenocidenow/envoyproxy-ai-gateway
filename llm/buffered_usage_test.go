@@ -7,7 +7,7 @@ package llm
 
 import "testing"
 
-func TestReviewBufferedUsage(t *testing.T) {
+func TestBufferedUsage(t *testing.T) {
 	for _, tc := range []struct {
 		name, op, schema, model, request, response string
 		input, output, total                       uint32

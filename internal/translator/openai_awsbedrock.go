@@ -170,7 +170,7 @@ func (o *openAIToAWSBedrockTranslatorV1ChatCompletion) RequestBody(_ []byte, ope
 		}
 	}
 
-	newBody, err = json.Marshal(bedrockReq)
+	newBody, err = json.MarshalWithSortedKeys(bedrockReq)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to marshal body: %w", err)
 	}

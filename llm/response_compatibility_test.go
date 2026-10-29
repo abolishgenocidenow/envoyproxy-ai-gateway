@@ -12,7 +12,7 @@ import (
 	"testing"
 )
 
-func secondAttempt(t *testing.T, operation string, stream bool) *Attempt {
+func newOpenAITestAttempt(t *testing.T, operation string, stream bool) *Attempt {
 	t.Helper()
 	body := `{"model":"test","messages":[{"role":"user","content":"hi"}],"input":"hi","max_tokens":20}`
 	if stream {
@@ -36,10 +36,10 @@ func secondAttempt(t *testing.T, operation string, stream bool) *Attempt {
 	return a
 }
 
-func TestSecondBufferedForwarding(t *testing.T) {
+func TestBufferedForwarding(t *testing.T) {
 	for _, field := range []string{`"usage":{"prompt_tokens":-1}`, `"response":"x"`, `"message":"x"`, `"usage":"x"`, `"usageMetadata":"x"`} {
 		t.Run(field, func(t *testing.T) {
-			a := secondAttempt(t, "/v1/chat/completions", false)
+			a := newOpenAITestAttempt(t, "/v1/chat/completions", false)
 			body := []byte(`{"choices":[],` + field + `}`)
 			r, err := a.ResponseBody(body, true)
 			if err != nil {
@@ -52,8 +52,8 @@ func TestSecondBufferedForwarding(t *testing.T) {
 	}
 }
 
-func TestSecondOpaqueData(t *testing.T) {
-	a := secondAttempt(t, "/v1/chat/completions", true)
+func TestOpaqueData(t *testing.T) {
+	a := newOpenAITestAttempt(t, "/v1/chat/completions", true)
 	body := []byte("data: hello\n\ndata: [DONE]\n\n")
 	r, err := a.ResponseBody(body, true)
 	if err != nil {
@@ -64,8 +64,8 @@ func TestSecondOpaqueData(t *testing.T) {
 	}
 }
 
-func TestSecondLargeResponses(t *testing.T) {
-	a := secondAttempt(t, "/v1/responses", true)
+func TestLargeResponses(t *testing.T) {
+	a := newOpenAITestAttempt(t, "/v1/responses", true)
 	body := []byte("event: response.completed\ndata: " + `{"type":"response.completed","response":{"output":[{"type":"image_generation_call","result":"` + strings.Repeat("x", 2<<20) + `"}],"usage":{"input_tokens":7}}}` + "\n\n")
 	r, err := a.ResponseBody(body, true)
 	if err != nil {
@@ -76,8 +76,8 @@ func TestSecondLargeResponses(t *testing.T) {
 	}
 }
 
-func TestSecondResponsesErrorUsage(t *testing.T) {
-	a := secondAttempt(t, "/v1/responses", true)
+func TestResponsesErrorUsage(t *testing.T) {
+	a := newOpenAITestAttempt(t, "/v1/responses", true)
 	if _, err := a.ResponseBody([]byte("data: {\"type\":\"response.in_progress\",\"response\":{\"usage\":{\"input_tokens\":7}}}\n\n"), false); err != nil {
 		t.Fatal(err)
 	}
@@ -98,13 +98,13 @@ func TestSecondResponsesErrorUsage(t *testing.T) {
 	}
 }
 
-func TestSecondObservationErrors(t *testing.T) {
-	a := secondAttempt(t, "/v1/chat/completions", false)
+func TestObservationErrors(t *testing.T) {
+	a := newOpenAITestAttempt(t, "/v1/chat/completions", false)
 	r, err := a.ResponseBody([]byte(`{"choices":[],"usage":{"prompt_tokens":-1}}`), true)
 	if err != nil || r.UsageError == nil {
 		t.Fatalf("response=%v usage=%v", err, r.UsageError)
 	}
-	a = secondAttempt(t, "/v1/chat/completions", true)
+	a = newOpenAITestAttempt(t, "/v1/chat/completions", true)
 	r, err = a.ResponseBody([]byte("data: hello\n\ndata: [DONE]\n\n"), true)
 	if err != nil || r.UsageError == nil {
 		t.Fatalf("response=%v usage=%v", err, r.UsageError)
@@ -115,7 +115,7 @@ func TestSecondObservationErrors(t *testing.T) {
 	}
 }
 
-func TestSecondOpaqueTranslatedData(t *testing.T) {
+func TestOpaqueTranslatedData(t *testing.T) {
 	a := streamAttempt(t, "/v1/chat/completions", "GCPAnthropic", 0)
 	body := []byte("data: hello\n\n")
 	r, err := a.ResponseBody(body, false)

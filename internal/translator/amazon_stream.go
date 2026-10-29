@@ -10,11 +10,12 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"github.com/envoyproxy/ai-gateway/internal/json"
 	"io"
 
 	"github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream"
+	"github.com/tidwall/gjson"
 
+	"github.com/envoyproxy/ai-gateway/internal/json"
 	"github.com/envoyproxy/ai-gateway/usage"
 )
 
@@ -116,6 +117,12 @@ var ErrMissingTerminal = errors.New("stream ended without a terminal event")
 
 func (s *amazonStreamState) read(r io.Reader, pending *[]byte, limit int, end bool, emit func(eventstream.Message) error) error {
 	err := readAmazonEventStream(r, pending, limit, end, func(msg eventstream.Message) error {
+		// Preserve the translators' tolerance for opaque event payloads. Frame
+		// bounds, CRCs, and provider exceptions are checked before this callback.
+		// An ignored payload must not count as provider completion.
+		if !gjson.ValidBytes(msg.Payload) {
+			return nil
+		}
 		if typ := msg.Headers.Get(":event-type"); typ != nil && (typ.String() == "messageStop" || typ.String() == "metadata") {
 			s.terminal = true
 		}

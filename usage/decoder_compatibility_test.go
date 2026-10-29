@@ -7,7 +7,7 @@ package usage
 
 import "testing"
 
-func TestSecondLenientUsage(t *testing.T) {
+func TestLenientUsage(t *testing.T) {
 	for _, body := range []string{`{"message":"failed"}`, `{"response":"x"}`, `{"usage":[]}`, `{"usageMetadata":false}`, `{"usage":{"prompt_tokens":"unknown","prompt_tokens_details":[]}}`, `{"usage":{"prompt_tokens_details":{"cached_tokens":false}}}`, `{"usageMetadata":{"promptTokenCount":"unknown"}}`, `{"metadata":"x"}`} {
 		t.Run(body, func(t *testing.T) {
 			d := Decoder{Schema: "AWSBedrock"}

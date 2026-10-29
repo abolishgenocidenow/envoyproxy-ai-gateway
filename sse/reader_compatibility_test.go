@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-func TestReviewCommentsAndID(t *testing.T) {
+func TestCommentsAndID(t *testing.T) {
 	r := NewReader(32)
 	var ids []string
 	err := r.Feed([]byte(":"+strings.Repeat("x", 100)+"\nid: abc\ndata: one\n\ndata: two\n\n: tail\n"), func(e Event) error { ids = append(ids, e.ID); return nil })
@@ -24,7 +24,8 @@ func TestReviewCommentsAndID(t *testing.T) {
 		t.Fatal(ids)
 	}
 }
-func TestReviewDiscardIncomplete(t *testing.T) {
+
+func TestDiscardIncomplete(t *testing.T) {
 	r := NewReader(32)
 	if err := r.Feed([]byte("data: partial"), func(Event) error { t.Fatal("unexpected event"); return nil }); err != nil {
 		t.Fatal(err)

@@ -75,7 +75,7 @@ func (o *openAIToOpenAITranslatorV1Embedding) ResponseBody(_ map[string]string, 
 		return nil, nil, tokenUsage, "", readErr
 	}
 	var resp openai.EmbeddingResponse
-	if err := json.Unmarshal(raw, &resp); err != nil {
+	if err = json.Unmarshal(raw, &resp); err != nil {
 		return nil, nil, tokenUsage, "", fmt.Errorf("failed to unmarshal body: %w", err)
 	}
 

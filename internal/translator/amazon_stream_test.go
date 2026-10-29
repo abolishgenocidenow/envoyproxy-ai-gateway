@@ -277,3 +277,23 @@ func TestAmazonStreamUnboundedLimit(t *testing.T) {
 		})
 	}
 }
+
+func TestAmazonOpaquePayloadIsNotTerminal(t *testing.T) {
+	var wire bytes.Buffer
+	err := eventstream.NewEncoder().Encode(&wire, eventstream.Message{
+		Headers: eventstream.Headers{{Name: ":event-type", Value: eventstream.StringValue("messageStop")}},
+		Payload: []byte("opaque control payload"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pending []byte
+	var state amazonStreamState
+	err = state.read(&wire, &pending, 1024, true, func(eventstream.Message) error {
+		t.Fatal("opaque payload emitted")
+		return nil
+	})
+	if err != nil || state.terminal {
+		t.Fatalf("error=%v terminal=%v", err, state.terminal)
+	}
+}

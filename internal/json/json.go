@@ -20,6 +20,8 @@ var (
 	Unmarshal = config.Unmarshal
 	// Marshal is equivalent to encoding/json.Marshal.
 	Marshal = config.Marshal
+	// MarshalWithSortedKeys encodes maps in stable key order for translated requests.
+	MarshalWithSortedKeys = sonicjson.Config{CaseSensitive: true, SortMapKeys: true}.Froze().Marshal
 	// NewEncoder is equivalent to encoding/json.NewEncoder.
 	NewEncoder = config.NewEncoder
 	// NewDecoder is equivalent to encoding/json.NewDecoder.

@@ -11,7 +11,7 @@ import (
 	"testing"
 )
 
-func TestReviewPassthroughError(t *testing.T) {
+func TestPassthroughError(t *testing.T) {
 	a := streamAttempt(t, "/v1/messages", "Anthropic", 0)
 	raw := []byte("event: error\r\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"busy\"}}\r\n\r\n")
 	result, err := a.ResponseBody(raw, false)
@@ -20,7 +20,8 @@ func TestReviewPassthroughError(t *testing.T) {
 		t.Fatalf("body=%q error=%v", result.Body, err)
 	}
 }
-func TestReviewTolerantSSE(t *testing.T) {
+
+func TestTolerantSSE(t *testing.T) {
 	for _, tc := range []struct{ name, raw string }{
 		{"done at eof", "data: [DONE]\n"},
 		{"responses done", "event: response.completed\ndata: {\"type\":\"response.completed\"}\n\ndata: [DONE]\n\n"},
@@ -36,7 +37,8 @@ func TestReviewTolerantSSE(t *testing.T) {
 		})
 	}
 }
-func TestReviewInvalidUsageDoesNotAbort(t *testing.T) {
+
+func TestInvalidUsageDoesNotAbort(t *testing.T) {
 	for _, value := range []string{"-1", `"bad"`} {
 		t.Run(value, func(t *testing.T) {
 			a := streamAttempt(t, "/v1/chat/completions", "OpenAI", 0)
@@ -51,7 +53,7 @@ func TestReviewInvalidUsageDoesNotAbort(t *testing.T) {
 	}
 }
 
-func TestReviewTranslatedInvalidUsageDoesNotAbort(t *testing.T) {
+func TestTranslatedInvalidUsageDoesNotAbort(t *testing.T) {
 	a := streamAttempt(t, "/v1/chat/completions", "GCPVertexAI", 0)
 	r, err := a.ResponseBody([]byte("data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"hello\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":\"bad\"}}\n\n"), true)
 	if err != nil {
@@ -61,7 +63,8 @@ func TestReviewTranslatedInvalidUsageDoesNotAbort(t *testing.T) {
 		t.Fatalf("body %q usage error %v", r.Body, r.UsageError)
 	}
 }
-func TestReviewStrictAllowsResponsesDone(t *testing.T) {
+
+func TestStrictAllowsResponsesDone(t *testing.T) {
 	a := streamAttempt(t, "/v1/chat/completions", "OpenAI", 0, true)
 	_, err := a.ResponseBody([]byte("data: {\"type\":\"response.completed\"}\n\ndata: [DONE]\n"), true)
 	if err != nil {
@@ -69,7 +72,7 @@ func TestReviewStrictAllowsResponsesDone(t *testing.T) {
 	}
 }
 
-func TestReviewLibraryDiscardsIncomplete(t *testing.T) {
+func TestLibraryDiscardsIncomplete(t *testing.T) {
 	for _, raw := range []string{"data: {", "data: {}\n"} {
 		t.Run(raw, func(t *testing.T) {
 			a := streamAttempt(t, "/v1/chat/completions", "OpenAI", 0)
@@ -81,7 +84,7 @@ func TestReviewLibraryDiscardsIncomplete(t *testing.T) {
 	}
 }
 
-func TestReviewCleanEOFMissingTerminal(t *testing.T) {
+func TestCleanEOFMissingTerminal(t *testing.T) {
 	a := streamAttempt(t, "/v1/chat/completions", "OpenAI", 0)
 	_, err := a.ResponseBody([]byte("data: {}\n\n"), true)
 	if !errors.Is(err, ErrMissingTerminal) {

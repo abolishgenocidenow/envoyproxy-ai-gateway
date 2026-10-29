@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-func TestReviewLargeAndFinalMCP(t *testing.T) {
+func TestLargeAndFinalMCP(t *testing.T) {
 	for _, tc := range []struct{ name, raw string }{
 		{"large", `data: {"jsonrpc":"2.0","id":1,"result":{"text":"` + strings.Repeat("x", 2<<20) + "\"}}\n\n"},
 		{"done line before response", "data: [DONE]\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}"},
@@ -34,7 +34,7 @@ func TestReviewLargeAndFinalMCP(t *testing.T) {
 	}
 }
 
-func TestReviewResponseBeforeBadFollowingEvent(t *testing.T) {
+func TestResponseBeforeBadFollowingEvent(t *testing.T) {
 	body, err := readSSEJSONResponse(strings.NewReader("data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n\ndata: invalid\n\n"))
 	if err != nil || len(body) == 0 {
 		t.Fatalf("body=%q error=%v", body, err)

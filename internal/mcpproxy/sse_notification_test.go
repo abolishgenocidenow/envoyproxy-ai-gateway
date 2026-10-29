@@ -12,7 +12,7 @@ import (
 	"testing/iotest"
 )
 
-func TestSecondSkipNonRPC(t *testing.T) {
+func TestSkipNonRPC(t *testing.T) {
 	for _, prefix := range []string{"ping", `{"hello":"world"}`, `[1,2]`} {
 		t.Run(prefix, func(t *testing.T) {
 			for _, split := range []bool{false, true} {

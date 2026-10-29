@@ -7,7 +7,7 @@ package usage
 
 import "testing"
 
-func TestReviewMetadataAndThinking(t *testing.T) {
+func TestMetadataAndThinking(t *testing.T) {
 	for _, tc := range []struct {
 		name, schema, body string
 		input, output      uint32

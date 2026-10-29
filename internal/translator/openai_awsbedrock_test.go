@@ -2930,3 +2930,14 @@ func TestOpenAIToAWSBedrockTranslatorV1ChatCompletion_ResponseBody_NullContentBl
 	require.Contains(t, string(body), "Hello!")
 	require.Equal(t, tokenUsageFrom(10, -1, -1, 20, 30, -1), tokenUsage)
 }
+
+func TestBedrockThinkingRequestOrder(t *testing.T) {
+	var request openai.ChatCompletionRequest
+	require.NoError(t, json.Unmarshal([]byte(`{"model":"test","stream":true,"messages":[{"role":"system","content":"You are a chatbot."}],"thinking":{"type":"enabled","budget_tokens":4096}}`), &request))
+	for range 100 {
+		tr := NewChatCompletionOpenAIToAWSBedrockTranslator("")
+		_, body, err := tr.RequestBody(nil, &request, false)
+		require.NoError(t, err)
+		require.Equal(t, `{"additionalModelRequestFields":{"thinking":{"budget_tokens":4096,"type":"enabled"}},"inferenceConfig":{},"messages":[],"system":[{"text":"You are a chatbot."}]}`, string(body)) //nolint:testifylint // Verify wire key order, not just JSON equivalence.
+	}
+}

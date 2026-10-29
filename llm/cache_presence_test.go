@@ -26,10 +26,10 @@ func TestSecondCachePresence(t *testing.T) {
 				}
 				switch provider {
 				case "chat":
-					a = secondAttempt(t, "/v1/chat/completions", true)
+					a = newOpenAITestAttempt(t, "/v1/chat/completions", true)
 					body = []byte("data: " + `{"choices":[],"usage":{"prompt_tokens":7,"completion_tokens":2,"total_tokens":9` + fields + `}}` + "\n\ndata: [DONE]\n\n")
 				case "responses":
-					a = secondAttempt(t, "/v1/responses", true)
+					a = newOpenAITestAttempt(t, "/v1/responses", true)
 					fields = ""
 					if present {
 						fields = `,"input_tokens_details":{"cached_tokens":0,"cache_write_tokens":0}`
