@@ -14,6 +14,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/envoyproxy/ai-gateway/internal/filterapi"
+	"github.com/envoyproxy/ai-gateway/internal/filterconfig"
 	"github.com/envoyproxy/ai-gateway/internal/version"
 )
 
@@ -97,7 +98,7 @@ func (c *GatewayController) writeFilterConfigBundle(ctx context.Context, gateway
 	}
 
 	// Create index Secret
-	indexRaw, err := filterapi.MarshalConfigBundleIndex(index)
+	indexRaw, err := filterconfig.MarshalConfigBundleIndex(index)
 	if err != nil {
 		return fmt.Errorf("failed to marshal config bundle index: %w", err)
 	}

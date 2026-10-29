@@ -42,6 +42,7 @@ import (
 	aigv1b1 "github.com/envoyproxy/ai-gateway/api/v1beta1"
 	"github.com/envoyproxy/ai-gateway/internal/controller/rotators"
 	"github.com/envoyproxy/ai-gateway/internal/filterapi"
+	"github.com/envoyproxy/ai-gateway/internal/filterconfig"
 	"github.com/envoyproxy/ai-gateway/internal/internalapi"
 	"github.com/envoyproxy/ai-gateway/internal/llmcostcel"
 )
@@ -153,10 +154,10 @@ func requireFilterConfigFromBundle(t *testing.T, kube kubernetes.Interface, name
 		ok = true
 	}
 	require.True(t, ok)
-	index, err := filterapi.UnmarshalConfigBundleIndex([]byte(indexRaw))
+	index, err := filterconfig.UnmarshalConfigBundleIndex([]byte(indexRaw))
 	require.NoError(t, err)
 
-	cfg, err := filterapi.ReassembleBundleConfig(index, func(part filterapi.ConfigBundlePart) ([]byte, error) {
+	cfg, err := filterconfig.ReassembleBundleConfig(index, func(part filterapi.ConfigBundlePart) ([]byte, error) {
 		partSecret, getErr := kube.CoreV1().Secrets(namespace).Get(t.Context(), part.Name, metav1.GetOptions{})
 		if getErr != nil {
 			return nil, getErr
@@ -508,9 +509,9 @@ func TestGatewayController_reconcileFilterConfigSecret(t *testing.T) {
 			ok = true
 		}
 		require.True(t, ok)
-		index, err := filterapi.UnmarshalConfigBundleIndex([]byte(indexRaw))
+		index, err := filterconfig.UnmarshalConfigBundleIndex([]byte(indexRaw))
 		require.NoError(t, err)
-		cfg, err := filterapi.ReassembleBundleConfig(index, func(part filterapi.ConfigBundlePart) ([]byte, error) {
+		cfg, err := filterconfig.ReassembleBundleConfig(index, func(part filterapi.ConfigBundlePart) ([]byte, error) {
 			partSecret, getErr := kube.CoreV1().Secrets(someNamespace).Get(t.Context(), part.Name, metav1.GetOptions{})
 			if getErr != nil {
 				return nil, getErr
@@ -1188,9 +1189,9 @@ func TestGatewayController_reconcileFilterConfigSecret_SkipsDeletedRoutes(t *tes
 		ok = true
 	}
 	require.True(t, ok)
-	index, err := filterapi.UnmarshalConfigBundleIndex([]byte(indexRaw))
+	index, err := filterconfig.UnmarshalConfigBundleIndex([]byte(indexRaw))
 	require.NoError(t, err)
-	cfg, err := filterapi.ReassembleBundleConfig(index, func(part filterapi.ConfigBundlePart) ([]byte, error) {
+	cfg, err := filterconfig.ReassembleBundleConfig(index, func(part filterapi.ConfigBundlePart) ([]byte, error) {
 		partSecret, getErr := kube.CoreV1().Secrets(someNamespace).Get(t.Context(), part.Name, metav1.GetOptions{})
 		if getErr != nil {
 			return nil, getErr
@@ -3616,9 +3617,9 @@ func TestGatewayController_reconcileFilterMCPConfigSecret(t *testing.T) {
 		ok = true
 	}
 	require.True(t, ok)
-	index, err := filterapi.UnmarshalConfigBundleIndex([]byte(indexRaw))
+	index, err := filterconfig.UnmarshalConfigBundleIndex([]byte(indexRaw))
 	require.NoError(t, err)
-	cfg, err := filterapi.ReassembleBundleConfig(index, func(part filterapi.ConfigBundlePart) ([]byte, error) {
+	cfg, err := filterconfig.ReassembleBundleConfig(index, func(part filterapi.ConfigBundlePart) ([]byte, error) {
 		partSecret, getErr := kube.CoreV1().Secrets(someNamespace).Get(t.Context(), part.Name, metav1.GetOptions{})
 		if getErr != nil {
 			return nil, getErr
@@ -3663,7 +3664,7 @@ func TestGatewayController_writeFilterConfigBundleShards(t *testing.T) {
 		}
 	}
 	require.True(t, ok)
-	index, err := filterapi.UnmarshalConfigBundleIndex([]byte(indexRaw))
+	index, err := filterconfig.UnmarshalConfigBundleIndex([]byte(indexRaw))
 	require.NoError(t, err)
 	require.Len(t, index.Parts, 3)
 

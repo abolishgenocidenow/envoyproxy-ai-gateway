@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/envoyproxy/ai-gateway/internal/filterapi"
+	"github.com/envoyproxy/ai-gateway/internal/filterconfig"
 )
 
 func TestUnmarshalConfigYaml(t *testing.T) {
@@ -27,7 +28,7 @@ llmRequestCosts:
   type: OutputToken
 `
 	require.NoError(t, os.WriteFile(configPath, []byte(config), 0o600))
-	cfg, err := filterapi.UnmarshalConfigYaml(configPath)
+	cfg, err := filterconfig.UnmarshalConfigYaml(configPath)
 	require.NoError(t, err)
 
 	expectedCfg := &filterapi.Config{
@@ -43,14 +44,14 @@ llmRequestCosts:
 	require.Equal(t, expectedCfg, cfg)
 
 	t.Run("not found", func(t *testing.T) {
-		_, err := filterapi.UnmarshalConfigYaml("not-found.yaml")
+		_, err := filterconfig.UnmarshalConfigYaml("not-found.yaml")
 		require.Error(t, err)
 		require.True(t, os.IsNotExist(err))
 	})
 	t.Run("invalid", func(t *testing.T) {
 		const invalidConfig = `{wefaf3q20,9u,f02`
 		require.NoError(t, os.WriteFile(configPath, []byte(invalidConfig), 0o600))
-		_, err := filterapi.UnmarshalConfigYaml(configPath)
+		_, err := filterconfig.UnmarshalConfigYaml(configPath)
 		require.Error(t, err)
 	})
 }

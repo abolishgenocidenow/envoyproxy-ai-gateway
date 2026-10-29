@@ -13,10 +13,7 @@ package filterapi
 
 import (
 	"log/slog"
-	"os"
 	"time"
-
-	"k8s.io/apimachinery/pkg/util/yaml"
 
 	"github.com/envoyproxy/ai-gateway/internal/internalapi"
 )
@@ -404,14 +401,3 @@ type HTTPBodyField struct {
 }
 
 // UnmarshalConfigYaml reads the file at the given path and unmarshals it into a Config struct.
-func UnmarshalConfigYaml(path string) (*Config, error) {
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	var cfg Config
-	if err := yaml.Unmarshal(raw, &cfg); err != nil {
-		return nil, err
-	}
-	return &cfg, nil
-}

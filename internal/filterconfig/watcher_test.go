@@ -3,7 +3,7 @@
 // The full text of the Apache license is available in the LICENSE file at
 // the root of the repo.
 
-package filterapi
+package filterconfig
 
 import (
 	"context"
@@ -18,24 +18,25 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/envoyproxy/ai-gateway/internal/filterapi"
 	internaltesting "github.com/envoyproxy/ai-gateway/internal/testing"
 )
 
 // mockReceiver is a mock implementation of Receiver.
 type mockReceiver struct {
-	cfg *Config
+	cfg *filterapi.Config
 	mux sync.Mutex
 }
 
 // LoadConfig implements ConfigReceiver.
-func (m *mockReceiver) LoadConfig(_ context.Context, cfg *Config) error {
+func (m *mockReceiver) LoadConfig(_ context.Context, cfg *filterapi.Config) error {
 	m.mux.Lock()
 	defer m.mux.Unlock()
 	m.cfg = cfg
 	return nil
 }
 
-func (m *mockReceiver) getConfig() *Config {
+func (m *mockReceiver) getConfig() *filterapi.Config {
 	m.mux.Lock()
 	defer m.mux.Unlock()
 	return m.cfg
@@ -61,15 +62,15 @@ func TestRunConfigBundleWatcher(t *testing.T) {
 		writeBundle := func(cfg string) {
 			raw := []byte(cfg)
 			requireAtomicWriteFile(t, tickInterval, filepath.Join(bundleDir, "parts/000"), raw, 0o600)
-			idx := &ConfigBundleIndex{
-				Checksum: ConfigBundleChecksum(raw),
-				Parts: []ConfigBundlePart{
+			idx := &filterapi.ConfigBundleIndex{
+				Checksum: filterapi.ConfigBundleChecksum(raw),
+				Parts: []filterapi.ConfigBundlePart{
 					{Name: "part-000", Path: "parts/000"},
 				},
 			}
 			idxRaw, err := MarshalConfigBundleIndex(idx)
 			require.NoError(t, err)
-			requireAtomicWriteFile(t, tickInterval, filepath.Join(bundleDir, ConfigBundleIndexFileName), idxRaw, 0o600)
+			requireAtomicWriteFile(t, tickInterval, filepath.Join(bundleDir, filterapi.ConfigBundleIndexFileName), idxRaw, 0o600)
 		}
 
 		writeBundle("version: dev\nbackends:\n- name: first\n")

@@ -3,7 +3,7 @@
 // The full text of the Apache license is available in the LICENSE file at
 // the root of the repo.
 
-package filterapi
+package filterconfig
 
 import (
 	"context"
@@ -14,16 +14,17 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/envoyproxy/ai-gateway/internal/filterapi"
 	"github.com/envoyproxy/ai-gateway/internal/version"
 )
 
 var errBundlePartNotFound = errors.New("bundle part not found")
 
-// ConfigReceiver is an interface that can receive *Config updates.
+// ConfigReceiver is an interface that can receive *filterapi.Config updates.
 // This is mostly for decoupling and testing purposes.
 type ConfigReceiver interface {
 	// LoadConfig updates the configuration.
-	LoadConfig(ctx context.Context, config *Config) error
+	LoadConfig(ctx context.Context, config *filterapi.Config) error
 }
 
 type bundleConfigWatcher struct {
@@ -45,7 +46,7 @@ func RunConfigBundleWatcher(ctx context.Context, bundlePath string, rcv ConfigRe
 	if err := cw.loadConfig(ctx); err != nil {
 		// The initial load of the bundle may fail because of race condition
 		// when the bundle is being created. We will retry on the next tick.
-		if !errors.Is(err, ErrBundleChecksumMismatch) && !errors.Is(err, errBundlePartNotFound) {
+		if !errors.Is(err, filterapi.ErrBundleChecksumMismatch) && !errors.Is(err, errBundlePartNotFound) {
 			return fmt.Errorf("failed to load initial bundled config: %w", err)
 		}
 		l.Warn("failed to load initial bundled config; will retry on next watch tick", slog.String("error", err.Error()))
@@ -76,7 +77,7 @@ func (cw *bundleConfigWatcher) watch(ctx context.Context, tick time.Duration) {
 }
 
 func (cw *bundleConfigWatcher) loadConfig(ctx context.Context) error {
-	indexPath := filepath.Join(cw.path, ConfigBundleIndexFileName)
+	indexPath := filepath.Join(cw.path, filterapi.ConfigBundleIndexFileName)
 	indexRaw, err := os.ReadFile(indexPath)
 	if err != nil {
 		return err
@@ -109,7 +110,7 @@ func (cw *bundleConfigWatcher) loadConfig(ctx context.Context) error {
 	}
 
 	cw.l.Info("loading a new bundled config", slog.String("path", cw.path))
-	cfg, err := ReassembleBundleConfig(index, func(part ConfigBundlePart) ([]byte, error) {
+	cfg, err := ReassembleBundleConfig(index, func(part filterapi.ConfigBundlePart) ([]byte, error) {
 		partPath := filepath.Join(cw.path, filepath.FromSlash(part.Path))
 		raw, readErr := os.ReadFile(partPath)
 		if readErr != nil && errors.Is(readErr, os.ErrNotExist) {

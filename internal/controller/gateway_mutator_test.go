@@ -26,6 +26,7 @@ import (
 
 	aigv1b1 "github.com/envoyproxy/ai-gateway/api/v1beta1"
 	"github.com/envoyproxy/ai-gateway/internal/filterapi"
+	"github.com/envoyproxy/ai-gateway/internal/filterconfig"
 	"github.com/envoyproxy/ai-gateway/internal/internalapi"
 )
 
@@ -411,7 +412,7 @@ func TestGatewayMutator_mutatePod(t *testing.T) {
 					require.Len(t, pod.Spec.Containers, 1)
 
 					// Create the config secret and mutate the pod again.
-					indexRaw, idxErr := filterapi.MarshalConfigBundleIndex(&filterapi.ConfigBundleIndex{
+					indexRaw, idxErr := filterconfig.MarshalConfigBundleIndex(&filterapi.ConfigBundleIndex{
 						Checksum: "abc",
 						Parts: []filterapi.ConfigBundlePart{
 							{
@@ -493,7 +494,7 @@ func TestGatewayMutator_mutatePod_BundleOnly(t *testing.T) {
 		Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "envoy"}}},
 	}
 
-	indexRaw, idxErr := filterapi.MarshalConfigBundleIndex(&filterapi.ConfigBundleIndex{
+	indexRaw, idxErr := filterconfig.MarshalConfigBundleIndex(&filterapi.ConfigBundleIndex{
 		Checksum: "abc",
 		Parts: []filterapi.ConfigBundlePart{
 			{Name: FilterConfigBundleIndexSecretName(gwName, gwNamespace) + "-part-000", Path: "parts/000"},

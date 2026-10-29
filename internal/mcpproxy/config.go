@@ -23,7 +23,7 @@ import (
 
 type (
 	// ProxyConfig holds the main MCP proxy configuration.
-	// This implements [filterapi.ConfigReceiver] to gets the up-to-date configuration.
+	// This implements the host config receiver to gets the up-to-date configuration.
 	ProxyConfig struct {
 		configMu sync.RWMutex
 		*mcpProxyConfig

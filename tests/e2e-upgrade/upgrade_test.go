@@ -25,6 +25,7 @@ import (
 
 	"github.com/envoyproxy/ai-gateway/internal/controller"
 	"github.com/envoyproxy/ai-gateway/internal/filterapi"
+	"github.com/envoyproxy/ai-gateway/internal/filterconfig"
 	"github.com/envoyproxy/ai-gateway/tests/internal/e2elib"
 	"github.com/envoyproxy/ai-gateway/tests/internal/testupstreamlib"
 )
@@ -318,7 +319,7 @@ func breakFilterConfig(t *testing.T) {
 	require.NoError(t, err, "failed to get filter config bundle index")
 	indexRaw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(indexEncoded)))
 	require.NoError(t, err, "failed to decode filter config bundle index")
-	index, err := filterapi.UnmarshalConfigBundleIndex(indexRaw)
+	index, err := filterconfig.UnmarshalConfigBundleIndex(indexRaw)
 	require.NoError(t, err, "failed to unmarshal filter config bundle index")
 	require.NotEmpty(t, index.Parts, "filter config bundle has no parts")
 

@@ -23,6 +23,7 @@ import (
 	gwapiv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	"github.com/envoyproxy/ai-gateway/internal/filterapi"
+	"github.com/envoyproxy/ai-gateway/internal/filterconfig"
 	internaltesting "github.com/envoyproxy/ai-gateway/internal/testing"
 	"github.com/envoyproxy/ai-gateway/internal/version"
 )
@@ -422,9 +423,9 @@ func requireExtProcConfigBundle(t *testing.T, bundlePath string) *filterapi.Conf
 	require.NotEmpty(t, bundlePath)
 	indexRaw, err := os.ReadFile(filepath.Join(bundlePath, filterapi.ConfigBundleIndexFileName))
 	require.NoError(t, err)
-	index, err := filterapi.UnmarshalConfigBundleIndex(indexRaw)
+	index, err := filterconfig.UnmarshalConfigBundleIndex(indexRaw)
 	require.NoError(t, err)
-	cfg, err := filterapi.ReassembleBundleConfig(index, func(part filterapi.ConfigBundlePart) ([]byte, error) {
+	cfg, err := filterconfig.ReassembleBundleConfig(index, func(part filterapi.ConfigBundlePart) ([]byte, error) {
 		return os.ReadFile(filepath.Join(bundlePath, filepath.FromSlash(part.Path)))
 	})
 	require.NoError(t, err)
