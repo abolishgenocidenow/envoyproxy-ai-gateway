@@ -17,8 +17,8 @@ import (
 	anthropicschema "github.com/envoyproxy/ai-gateway/internal/apischema/anthropic"
 	"github.com/envoyproxy/ai-gateway/internal/internalapi"
 	"github.com/envoyproxy/ai-gateway/internal/json"
-	"github.com/envoyproxy/ai-gateway/internal/metrics"
 	"github.com/envoyproxy/ai-gateway/internal/tracing/tracingapi"
+	metrics "github.com/envoyproxy/ai-gateway/usage"
 )
 
 // NewCountTokensToGCPAnthropicTranslator creates a translator for count_tokens to GCP Anthropic.

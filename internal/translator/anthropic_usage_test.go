@@ -10,9 +10,9 @@ import (
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/stretchr/testify/assert"
-	"k8s.io/utils/ptr"
 
-	"github.com/envoyproxy/ai-gateway/internal/metrics"
+	"github.com/envoyproxy/ai-gateway/internal/ptr"
+	metrics "github.com/envoyproxy/ai-gateway/usage"
 )
 
 func TestExtractLLMTokenUsage(t *testing.T) {

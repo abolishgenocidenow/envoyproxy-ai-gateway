@@ -16,12 +16,11 @@ import (
 	"strconv"
 	"strings"
 
-	"k8s.io/utils/ptr"
-
 	"github.com/envoyproxy/ai-gateway/internal/apischema/awsbedrock"
 	"github.com/envoyproxy/ai-gateway/internal/apischema/openai"
 	"github.com/envoyproxy/ai-gateway/internal/internalapi"
 	"github.com/envoyproxy/ai-gateway/internal/json"
+	"github.com/envoyproxy/ai-gateway/internal/ptr"
 )
 
 // openAIToolsToBedrockToolConfig converts openai ChatCompletion tools (and optional

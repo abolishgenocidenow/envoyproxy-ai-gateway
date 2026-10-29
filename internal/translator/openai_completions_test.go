@@ -14,7 +14,7 @@ import (
 	"github.com/envoyproxy/ai-gateway/internal/apischema/openai"
 	"github.com/envoyproxy/ai-gateway/internal/internalapi"
 	"github.com/envoyproxy/ai-gateway/internal/json"
-	"github.com/envoyproxy/ai-gateway/internal/metrics"
+	metrics "github.com/envoyproxy/ai-gateway/usage"
 )
 
 func TestOpenAIToOpenAITranslatorV1CompletionRequestBody(t *testing.T) {

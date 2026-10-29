@@ -17,15 +17,15 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream"
-	"k8s.io/utils/ptr"
 
 	"github.com/envoyproxy/ai-gateway/internal/apischema/awsbedrock"
 	"github.com/envoyproxy/ai-gateway/internal/apischema/openai"
 	"github.com/envoyproxy/ai-gateway/internal/internalapi"
 	"github.com/envoyproxy/ai-gateway/internal/json"
-	"github.com/envoyproxy/ai-gateway/internal/metrics"
+	"github.com/envoyproxy/ai-gateway/internal/ptr"
 	"github.com/envoyproxy/ai-gateway/internal/redaction"
 	"github.com/envoyproxy/ai-gateway/internal/tracing/tracingapi"
+	metrics "github.com/envoyproxy/ai-gateway/usage"
 )
 
 // NewChatCompletionOpenAIToAWSBedrockTranslator implements [Factory] for OpenAI to AWS Bedrock translation.
@@ -37,9 +37,11 @@ func NewChatCompletionOpenAIToAWSBedrockTranslator(modelNameOverride internalapi
 // Note: This uses the Converse API directly, not Bedrock's OpenAI-compatible API:
 // https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_Converse.html
 type openAIToAWSBedrockTranslatorV1ChatCompletion struct {
+	usageDecoder      metrics.Decoder
 	modelNameOverride internalapi.ModelNameOverride
 	stream            bool
 	bufferedBody      []byte
+	streamLimit       int
 	events            []awsbedrock.ConverseStreamEvent
 	// role is from MessageStartEvent in chunked messages, and used for all openai chat completion chunk choices.
 	// Translator is created for each request/response stream inside external processor, accordingly the role is not reused by multiple streams.
@@ -357,14 +359,14 @@ func (o *openAIToAWSBedrockTranslatorV1ChatCompletion) ResponseBody(_ map[string
 ) {
 	responseModel = o.requestModel
 	if o.stream {
+		defer func() { tokenUsage = o.usageDecoder.Snapshot() }()
 		newBody = make([]byte, 0)
-		var buf []byte
-		buf, err = io.ReadAll(body)
+		o.events = nil
+		defer func() { o.events = nil }()
+		err = readAmazonEventStream(body, &o.bufferedBody, o.streamLimit, endOfStream, o.appendAmazonEvent)
 		if err != nil {
-			return nil, nil, metrics.TokenUsage{}, "", fmt.Errorf("failed to read body: %w", err)
+			return nil, newBody, tokenUsage, responseModel, err
 		}
-		o.bufferedBody = append(o.bufferedBody, buf...)
-		o.extractAmazonEventStreamEvents()
 
 		for i := range o.events {
 			event := &o.events[i]
@@ -518,29 +520,32 @@ func (o *openAIToAWSBedrockTranslatorV1ChatCompletion) ResponseBody(_ map[string
 
 // extractAmazonEventStreamEvents extracts [awsbedrock.ConverseStreamEvent] from the buffered body.
 // The extracted events are stored in the processor's events field.
-func (o *openAIToAWSBedrockTranslatorV1ChatCompletion) extractAmazonEventStreamEvents() {
-	// TODO: Maybe reuse the reader and decoder.
-	r := bytes.NewReader(o.bufferedBody)
-	dec := eventstream.NewDecoder()
-	clear(o.events)
-	o.events = o.events[:0]
-	var lastRead int64
-	for {
-		msg, err := dec.Decode(r, nil)
-		if err != nil {
-			o.bufferedBody = o.bufferedBody[lastRead:]
-			return
-		}
-		var event awsbedrock.ConverseStreamEvent
-		eventType := msg.Headers.Get(":event-type")
-		if eventType != nil {
-			event.EventType = eventType.String()
-		}
-		if err := json.Unmarshal(msg.Payload, &event); err == nil {
-			o.events = append(o.events, event)
-		}
-		lastRead = r.Size() - int64(r.Len())
+func (o *openAIToAWSBedrockTranslatorV1ChatCompletion) extractAmazonEventStreamEvents() error {
+	data := o.bufferedBody
+	o.bufferedBody = nil
+	o.events = nil
+	return readAmazonEventStream(bytes.NewReader(data), &o.bufferedBody, o.streamLimit, false, o.appendAmazonEvent)
+}
+
+func (o *openAIToAWSBedrockTranslatorV1ChatCompletion) appendAmazonEvent(msg eventstream.Message) error {
+	o.usageDecoder.Schema = "AWSBedrock"
+	if _, err := o.usageDecoder.Observe(msg.Payload); err != nil {
+		return err
 	}
+	var event awsbedrock.ConverseStreamEvent
+	if eventType := msg.Headers.Get(":event-type"); eventType != nil {
+		event.EventType = eventType.String()
+	}
+	if err := json.Unmarshal(msg.Payload, &event); err != nil {
+		return fmt.Errorf("decode bedrock event payload: %w", err)
+	}
+	o.events = append(o.events, event)
+	return nil
+}
+
+// SetStreamLimit sets the maximum retained binary frame size in bytes.
+func (o *openAIToAWSBedrockTranslatorV1ChatCompletion) SetStreamLimit(limit int) {
+	o.streamLimit = limit
 }
 
 var emptyString = ""

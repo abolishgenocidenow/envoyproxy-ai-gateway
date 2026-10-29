@@ -84,10 +84,14 @@ func TestRecordTokenUsage(t *testing.T) {
 	pm.SetRequestModel("test-model")
 	pm.SetResponseModel("test-model")
 	pm.SetBackend(&filterapi.Backend{Schema: filterapi.VersionedAPISchema{Name: filterapi.APISchemaOpenAI}})
-	pm.RecordTokenUsage(t.Context(), TokenUsage{
-		inputTokens: 10, cachedInputTokens: 8, cacheCreationInputTokens: 2, outputTokens: 5,
-		inputTokenSet: true, cachedInputTokenSet: true, cacheCreationInputTokenSet: true, outputTokenSet: true,
-	}, nil)
+	pm.RecordTokenUsage(t.Context(), func() TokenUsage {
+		var u TokenUsage
+		u.SetInputTokens(10)
+		u.SetCachedInputTokens(8)
+		u.SetCacheCreationInputTokens(2)
+		u.SetOutputTokens(5)
+		return u
+	}(), nil)
 
 	count, sum := testotel.GetHistogramValues(t, mr, genaiMetricClientTokenUsage, inputAttrs)
 	assert.Equal(t, uint64(1), count)
@@ -228,10 +232,13 @@ func TestHeaderLabelMapping(t *testing.T) {
 	pm.SetRequestModel("test-model")
 	pm.SetResponseModel("test-model")
 	pm.SetBackend(&filterapi.Backend{Schema: filterapi.VersionedAPISchema{Name: filterapi.APISchemaOpenAI}})
-	pm.RecordTokenUsage(t.Context(), TokenUsage{
-		inputTokens: 10, outputTokens: 8, totalTokens: 5,
-		inputTokenSet: true, outputTokenSet: true, totalTokenSet: true,
-	}, requestHeaders)
+	pm.RecordTokenUsage(t.Context(), func() TokenUsage {
+		var u TokenUsage
+		u.SetInputTokens(10)
+		u.SetOutputTokens(8)
+		u.SetTotalTokens(5)
+		return u
+	}(), requestHeaders)
 
 	// Verify that the header mapping is set correctly.
 	assert.Equal(t, headerMapping, pm.requestHeaderAttributeMapping)
@@ -277,10 +284,13 @@ func TestModelNameHeaderKey(t *testing.T) {
 	// Response model is what the backend actually used
 	pm.SetResponseModel("us.meta.llama3-2-1b-instruct-v1:0")
 
-	pm.RecordTokenUsage(t.Context(), TokenUsage{
-		inputTokens: 10, outputTokens: 8, totalTokens: 5,
-		inputTokenSet: true, outputTokenSet: true, totalTokenSet: true,
-	}, headers)
+	pm.RecordTokenUsage(t.Context(), func() TokenUsage {
+		var u TokenUsage
+		u.SetInputTokens(10)
+		u.SetOutputTokens(8)
+		u.SetTotalTokens(5)
+		return u
+	}(), headers)
 
 	// Verify metrics use the overridden request model and original model
 	inputAttrs := attribute.NewSet(
@@ -322,10 +332,14 @@ func TestLabels_SetModel_RequestAndResponseDiffer(t *testing.T) {
 	pm.SetOriginalModel("orig-model")
 	pm.SetRequestModel("req-model")
 	pm.SetResponseModel("res-model")
-	pm.RecordTokenUsage(t.Context(), TokenUsage{
-		inputTokens: 2, cachedInputTokens: 1, cacheCreationInputTokens: 6, outputTokens: 3,
-		inputTokenSet: true, cachedInputTokenSet: true, cacheCreationInputTokenSet: true, outputTokenSet: true,
-	}, nil)
+	pm.RecordTokenUsage(t.Context(), func() TokenUsage {
+		var u TokenUsage
+		u.SetInputTokens(2)
+		u.SetCachedInputTokens(1)
+		u.SetCacheCreationInputTokens(6)
+		u.SetOutputTokens(3)
+		return u
+	}(), nil)
 
 	inputAttrs := attribute.NewSet(
 		attribute.Key(genaiAttributeOperationName).String(string(GenAIOperationCompletion)),
@@ -758,7 +772,7 @@ func TestAIServiceBackendAttribute(t *testing.T) {
 			Name:   backendName,
 			Schema: filterapi.VersionedAPISchema{Name: filterapi.APISchemaOpenAI},
 		})
-		pm.RecordTokenUsage(t.Context(), TokenUsage{inputTokens: 10, inputTokenSet: true}, nil)
+		pm.RecordTokenUsage(t.Context(), func() TokenUsage { var u TokenUsage; u.SetInputTokens(10); return u }(), nil)
 	}
 
 	for _, backendName := range backendNames {
@@ -791,7 +805,7 @@ func TestAIServiceBackendAttributeUsesExplicitIdentity(t *testing.T) {
 		AIServiceBackendName: "backend-ns/remote",
 		Schema:               filterapi.VersionedAPISchema{Name: filterapi.APISchemaOpenAI},
 	})
-	pm.RecordTokenUsage(t.Context(), TokenUsage{inputTokens: 10, inputTokenSet: true}, nil)
+	pm.RecordTokenUsage(t.Context(), func() TokenUsage { var u TokenUsage; u.SetInputTokens(10); return u }(), nil)
 
 	attrs := attribute.NewSet(
 		attribute.Key(genaiAttributeOperationName).String(string(GenAIOperationCompletion)),

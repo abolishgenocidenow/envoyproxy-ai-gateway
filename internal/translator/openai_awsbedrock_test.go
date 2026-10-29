@@ -24,13 +24,13 @@ import (
 	openaigo "github.com/openai/openai-go/v3"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
-	"k8s.io/utils/ptr"
 
 	"github.com/envoyproxy/ai-gateway/internal/apischema/awsbedrock"
 	"github.com/envoyproxy/ai-gateway/internal/apischema/openai"
 	"github.com/envoyproxy/ai-gateway/internal/internalapi"
 	"github.com/envoyproxy/ai-gateway/internal/json"
-	"github.com/envoyproxy/ai-gateway/internal/metrics"
+	"github.com/envoyproxy/ai-gateway/internal/ptr"
+	metrics "github.com/envoyproxy/ai-gateway/usage"
 )
 
 const releaseDateUnix = 1731679200 // Represents 2024-11-15 09:00:00 UTC
@@ -2023,7 +2023,7 @@ func TestOpenAIToAWSBedrockTranslatorExtractAmazonEventStreamEvents(t *testing.T
 	t.Run("all-at-once", func(t *testing.T) {
 		o := &openAIToAWSBedrockTranslatorV1ChatCompletion{}
 		o.bufferedBody = eventBytes
-		o.extractAmazonEventStreamEvents()
+		require.NoError(t, o.extractAmazonEventStreamEvents())
 		require.Len(t, o.events, 3)
 		require.Empty(t, o.bufferedBody)
 		for i, text := range []string{"1", "2", "3"} {
@@ -2034,19 +2034,19 @@ func TestOpenAIToAWSBedrockTranslatorExtractAmazonEventStreamEvents(t *testing.T
 	t.Run("in-chunks", func(t *testing.T) {
 		o := &openAIToAWSBedrockTranslatorV1ChatCompletion{}
 		o.bufferedBody = eventBytes[0:1]
-		o.extractAmazonEventStreamEvents()
+		require.NoError(t, o.extractAmazonEventStreamEvents())
 		require.Empty(t, o.events)
 		require.Len(t, o.bufferedBody, 1)
 
 		o.bufferedBody = eventBytes[0 : offsets[1]+5]
-		o.extractAmazonEventStreamEvents()
+		require.NoError(t, o.extractAmazonEventStreamEvents())
 		require.Len(t, o.events, 1)
 		require.Equal(t, eventBytes[offsets[1]:offsets[1]+5], o.bufferedBody)
 
 		clear(o.events)
 		o.events = o.events[:0]
 		o.bufferedBody = eventBytes[0 : offsets[2]+5]
-		o.extractAmazonEventStreamEvents()
+		require.NoError(t, o.extractAmazonEventStreamEvents())
 		require.Len(t, o.events, 2)
 		require.Equal(t, eventBytes[offsets[2]:offsets[2]+5], o.bufferedBody)
 	})
@@ -2056,7 +2056,7 @@ func TestOpenAIToAWSBedrockTranslatorExtractAmazonEventStreamEvents(t *testing.T
 		var err error
 		o.bufferedBody, err = base64.StdEncoding.DecodeString(base64RealStreamingEvents)
 		require.NoError(t, err)
-		o.extractAmazonEventStreamEvents()
+		require.NoError(t, o.extractAmazonEventStreamEvents())
 
 		var texts []string
 		var usage *awsbedrock.TokenUsage

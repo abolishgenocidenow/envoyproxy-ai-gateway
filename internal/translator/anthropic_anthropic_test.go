@@ -15,7 +15,7 @@ import (
 	anthropicschema "github.com/envoyproxy/ai-gateway/internal/apischema/anthropic"
 	"github.com/envoyproxy/ai-gateway/internal/internalapi"
 	"github.com/envoyproxy/ai-gateway/internal/json"
-	"github.com/envoyproxy/ai-gateway/internal/metrics"
+	metrics "github.com/envoyproxy/ai-gateway/usage"
 )
 
 func TestAnthropicToAnthropic_RequestBody(t *testing.T) {
