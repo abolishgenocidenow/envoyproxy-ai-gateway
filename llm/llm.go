@@ -16,6 +16,7 @@ import (
 	"log/slog"
 	"maps"
 	"strconv"
+	"strings"
 
 	"github.com/envoyproxy/ai-gateway/execution"
 	"github.com/envoyproxy/ai-gateway/internal/bodymutator"
@@ -25,9 +26,10 @@ import (
 	"github.com/envoyproxy/ai-gateway/internal/internalapi"
 	"github.com/envoyproxy/ai-gateway/internal/json"
 	"github.com/envoyproxy/ai-gateway/internal/llmrequest"
-	"github.com/envoyproxy/ai-gateway/internal/metrics"
 	"github.com/envoyproxy/ai-gateway/internal/tracing/tracingapi"
 	"github.com/envoyproxy/ai-gateway/internal/translator"
+	"github.com/envoyproxy/ai-gateway/sse"
+	"github.com/envoyproxy/ai-gateway/usage"
 )
 
 // These execution values reuse existing definitions; they are not API resources.
@@ -39,7 +41,7 @@ type (
 	HeaderValue  = filterapi.HTTPHeader
 	BodyPolicy   = filterapi.HTTPBodyMutation
 	BodyField    = filterapi.HTTPBodyField
-	Usage        = metrics.TokenUsage
+	Usage        = usage.TokenUsage
 	Mutation     = llmrequest.Mutation
 )
 
@@ -49,6 +51,8 @@ type Input struct {
 	Headers      map[string]string
 	Body         []byte
 	IncludeUsage bool
+	// SSELimit bounds a retained SSE event or AWS binary frame. Nonpositive values use sse.DefaultLimit.
+	SSELimit int
 }
 
 // Backend is one trusted selection supplied by pick or another host adapter.
@@ -140,6 +144,9 @@ func capture[Req, Resp, Chunk any](spec endpointspec.Spec[Req, Resp, Chunk], inp
 		if err != nil {
 			return nil, Mutation{}, err
 		}
+		if setter, ok := tr.(interface{ SetStreamLimit(int) }); ok {
+			setter.SetStreamLimit(input.SSELimit)
+		}
 		headers := maps.Clone(originalHeaders)
 		if setter, ok := tr.(translator.ContentTypeSetter); ok {
 			setter.SetContentType(headers["content-type"])
@@ -186,7 +193,11 @@ func capture[Req, Resp, Chunk any](spec endpointspec.Spec[Req, Resp, Chunk], inp
 			return nil, Mutation{}, err
 		}
 		attempts++
-		attempt := &Attempt{}
+		attempt := &Attempt{streaming: stream, reader: sse.NewReader(input.SSELimit), decoder: usage.Decoder{Schema: string(backend.Schema.Name)}}
+		switch any(spec).(type) {
+		case endpointspec.ChatCompletionsEndpointSpec, endpointspec.CompletionsEndpointSpec, endpointspec.ResponsesEndpointSpec, endpointspec.MessagesEndpointSpec:
+			attempt.requireTerminal = true
+		}
 		attempt.headers = tr.ResponseHeaders
 		attempt.body = func(headers map[string]string, body []byte, end bool) ([]Header, []byte, Usage, string, error) {
 			return tr.ResponseBody(headers, bytes.NewReader(body), end, tracingapi.Span[Resp, Chunk](nil))
@@ -219,6 +230,12 @@ type Attempt struct {
 	status          int
 	done            bool
 	usage           Usage
+	streaming       bool
+	reader          *sse.Reader
+	decoder         usage.Decoder
+	streamDone      bool
+	terminalSeen    bool
+	requireTerminal bool
 }
 
 // ResponseHeaders starts response translation. The host must decode content
@@ -259,9 +276,18 @@ func (a *Attempt) ResponseBody(body []byte, end bool) (Result, error) {
 		a.done = true
 		return Result{Headers: headers, Body: changed, Done: true}, err
 	}
+	if a.streaming && strings.Contains(a.responseHeaders["content-type"], "text/event-stream") {
+		return a.responseSSE(body, end)
+	}
 	headers, changed, usage, model, err := a.body(a.responseHeaders, body, end)
-	var overloaded *translator.StreamOverloadedError
-	a.done = end || errors.As(err, &overloaded)
+	if !a.streaming && a.requireTerminal && err == nil {
+		observed, observeErr := a.decoder.Observe(body)
+		usage = observed
+		if observeErr != nil {
+			err = observeErr
+		}
+	}
+	a.done = end || err != nil
 	a.usage.Override(usage)
 	return Result{Headers: headers, Body: changed, Usage: a.usage, Model: model, Done: a.done}, err
 }
