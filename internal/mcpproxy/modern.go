@@ -540,7 +540,7 @@ func (m *mcpRequestContext) sendModernRequest(ctx context.Context, req *jsonrpc.
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		respBody, readErr := readResponseBody(resp.Body)
+		respBody, readErr := readResponseBody(resp.Body, m.maxResponseBodySize)
 		if readErr != nil {
 			return nil, fmt.Errorf("read MCP error response: %w", readErr)
 		}
@@ -549,13 +549,13 @@ func (m *mcpRequestContext) sendModernRequest(ctx context.Context, req *jsonrpc.
 
 	var jsonPayload []byte
 	if strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
-		jsonPayload, err = readSSEJSONResponse(resp.Body)
+		jsonPayload, err = readSSEJSONResponse(resp.Body, m.maxResponseBodySize)
 	} else {
-		jsonPayload, err = readResponseBody(resp.Body)
+		jsonPayload, err = readResponseBody(resp.Body, m.maxResponseBodySize)
 		if err == nil {
 			trimmed := bytes.TrimSpace(bytes.TrimPrefix(jsonPayload, utf8BOM))
 			if bytes.HasPrefix(trimmed, []byte("event:")) || bytes.HasPrefix(trimmed, []byte("data:")) || bytes.HasPrefix(trimmed, []byte(":")) {
-				jsonPayload, err = readSSEJSONResponse(bytes.NewReader(jsonPayload))
+				jsonPayload, err = readSSEJSONResponse(bytes.NewReader(jsonPayload), m.maxResponseBodySize)
 			}
 		}
 	}

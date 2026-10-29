@@ -439,7 +439,7 @@ func (s *session) sendRequestPerBackend(ctx context.Context, eventChan chan<- *b
 		return nil
 	case http.StatusOK:
 	default:
-		body, readErr := readResponseBody(bodyReader)
+		body, readErr := readResponseBody(bodyReader, s.reqCtx.maxResponseBodySize)
 		if readErr != nil {
 			return fmt.Errorf("read MCP error response: %w", readErr)
 		}
@@ -449,7 +449,7 @@ func (s *session) sendRequestPerBackend(ctx context.Context, eventChan chan<- *b
 	if isJSONContentType(httpResp.Header.Get("Content-Type")) {
 		// Try to decode as a single JSON-RPC message first.
 		var respBody []byte
-		respBody, err = readResponseBody(bodyReader)
+		respBody, err = readResponseBody(bodyReader, s.reqCtx.maxResponseBodySize)
 		if err != nil {
 			return fmt.Errorf("failed to read MCP response body: %w", err)
 		}
@@ -474,7 +474,7 @@ func (s *session) sendRequestPerBackend(ctx context.Context, eventChan chan<- *b
 
 	// io.Copy won't flush until the end, which doesn't happen for streaming responses.
 	// So we need to read the body in chunks and flush after each chunk.
-	parser := newSSEEventParser(bodyReader, backend.Name)
+	parser := newSSEEventParser(bodyReader, backend.Name, s.reqCtx.maxResponseBodySize)
 	for {
 		var event *sseEvent
 		event, err = parser.next()

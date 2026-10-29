@@ -304,7 +304,7 @@ func TestSSEEventParser_IncompleteEvent(t *testing.T) {
 	p := newSSEEventParser(bytes.NewReader(raw), "mybackend")
 	ev, err := p.next()
 	require.Nil(t, ev)
-	require.ErrorIs(t, err, sse.ErrIncomplete)
+	require.ErrorIs(t, err, io.EOF)
 }
 
 func TestSSEEventParser_InvalidJSONRPCMessage(t *testing.T) {
@@ -423,15 +423,15 @@ func TestSSEEventParser_FramingBoundaries(t *testing.T) {
 		}
 	})
 	t.Run("overflow", func(t *testing.T) {
-		p := newSSEEventParser(strings.NewReader("data: "+strings.Repeat("x", sse.DefaultLimit)), "backend")
+		p := newSSEEventParser(strings.NewReader("data: "+strings.Repeat("x", sse.DefaultLimit)), "backend", sse.DefaultLimit)
 		_, err := p.next()
 		require.ErrorIs(t, err, sse.ErrOverflow)
 	})
 	t.Run("partial data discarded", func(t *testing.T) {
 		p := newSSEEventParser(strings.NewReader("data: {\"jsonrpc\":\"2.0\",\"method\":\"ping\"}\n"), "backend")
 		event, err := p.next()
-		require.Nil(t, event)
-		require.ErrorIs(t, err, sse.ErrIncomplete)
+		require.NotNil(t, event)
+		require.NoError(t, err)
 	})
 }
 
@@ -445,9 +445,9 @@ func TestReadResponseBodyBound(t *testing.T) {
 		{"over limit", sse.DefaultLimit + 1, true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			body, err := readResponseBody(strings.NewReader(strings.Repeat("x", tt.size)))
+			body, err := readResponseBody(strings.NewReader(strings.Repeat("x", tt.size)), sse.DefaultLimit)
 			if tt.overflow {
-				require.ErrorIs(t, err, sse.ErrOverflow)
+				require.ErrorIs(t, err, ErrBodyOverflow)
 				require.Nil(t, body)
 			} else {
 				require.NoError(t, err)
@@ -466,7 +466,7 @@ func TestReadSSEJSONResponse(t *testing.T) {
 	})
 	t.Run("partial response", func(t *testing.T) {
 		_, err := readSSEJSONResponse(strings.NewReader("data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n"))
-		require.ErrorIs(t, err, sse.ErrIncomplete)
+		require.NoError(t, err)
 	})
 	t.Run("returns terminal error without further reads", func(t *testing.T) {
 		r := io.MultiReader(strings.NewReader("data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-1,\"message\":\"failed\"}}\n\n"), failReader{})

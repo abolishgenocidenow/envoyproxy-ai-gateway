@@ -33,6 +33,7 @@ type (
 		tracer                     tracingapi.MCPTracer
 		client                     http.Client
 		logRequestHeaderAttributes map[string]string
+		maxResponseBodySize        int
 		maxRequestBodySize         int64 // maximum allowed POST body size in bytes
 	}
 
@@ -395,5 +396,5 @@ func (m *multiWatcherSignaler) Signal() {
 func (p *ProxyConfig) snapshot() *ProxyConfig {
 	p.configMu.RLock()
 	defer p.configMu.RUnlock()
-	return &ProxyConfig{mcpProxyConfig: p.mcpProxyConfig, toolChangeSignaler: p.toolChangeSignaler, l: p.l, sessionCrypto: p.sessionCrypto, tracer: p.tracer, client: p.client, logRequestHeaderAttributes: p.logRequestHeaderAttributes, maxRequestBodySize: p.maxRequestBodySize}
+	return &ProxyConfig{mcpProxyConfig: p.mcpProxyConfig, toolChangeSignaler: p.toolChangeSignaler, l: p.l, sessionCrypto: p.sessionCrypto, tracer: p.tracer, client: p.client, logRequestHeaderAttributes: p.logRequestHeaderAttributes, maxRequestBodySize: p.maxRequestBodySize, maxResponseBodySize: p.maxResponseBodySize}
 }

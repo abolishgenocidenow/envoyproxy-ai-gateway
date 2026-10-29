@@ -36,16 +36,24 @@ var (
 // sseEventParser reads bytes from a reader and parses the SSE Events gracefully
 // handling the different line terminations: CR, LF, CRLF.
 type sseEventParser struct {
-	backend filterapi.MCPBackendName
-	r       io.Reader
-	readBuf [4096]byte
-	framing sse.Reader
-	pos, n  int
-	readErr error
+	backend  filterapi.MCPBackendName
+	r        io.Reader
+	readBuf  [4096]byte
+	framing  sse.Reader
+	queue    []*sseEvent
+	pos, n   int
+	readErr  error
+	parseErr error
 }
 
-func newSSEEventParser(r io.Reader, backend filterapi.MCPBackendName) sseEventParser {
-	return sseEventParser{r: r, backend: backend}
+func newSSEEventParser(r io.Reader, backend filterapi.MCPBackendName, limits ...int) sseEventParser {
+	limit := -1
+	if len(limits) > 0 && limits[0] > 0 {
+		limit = limits[0]
+	}
+	framing := sse.NewReader(limit)
+	framing.FlushFinal = true
+	return sseEventParser{r: r, backend: backend, framing: *framing}
 }
 
 // tryDecodeJSONRPCMessage attempts to decode the body as a single JSON-RPC message.
@@ -71,8 +79,21 @@ func isJSONContentType(value string) bool {
 
 // next reads the next SSE event from the stream.
 func (s *sseEventParser) next() (*sseEvent, error) {
-	var event *sseEvent
+	if len(s.queue) > 0 {
+		event := s.queue[0]
+		s.queue = s.queue[1:]
+		return event, nil
+	}
+	if s.parseErr != nil {
+		return nil, s.parseErr
+	}
 	emit := func(e sse.Event) error {
+		for bytes.HasPrefix(e.Data, []byte("[DONE]\n")) {
+			e.Data = e.Data[len("[DONE]\n"):]
+		}
+		if bytes.Equal(bytes.TrimSpace(e.Data), []byte("[DONE]")) {
+			return nil
+		}
 		ret := &sseEvent{backend: s.backend, event: e.Type, id: e.ID}
 		if len(bytes.TrimSpace(e.Data)) != 0 {
 			msg, err := jsonrpc.DecodeMessage(e.Data)
@@ -81,27 +102,33 @@ func (s *sseEventParser) next() (*sseEvent, error) {
 			}
 			ret.messages = []jsonrpc.Message{msg}
 		}
-		event = ret
+		s.queue = append(s.queue, ret)
 		return nil
 	}
 	emptyReads := 0
 	for {
-		// Stop after one event without accumulating an unbounded queue of messages.
-		for s.pos < s.n {
-			b := s.readBuf[s.pos : s.pos+1]
-			s.pos++
-			if err := s.framing.Feed(b, emit); err != nil {
-				return nil, err
-			}
-			if event != nil {
+		if s.pos < s.n {
+			s.parseErr = s.framing.Feed(s.readBuf[s.pos:s.n], emit)
+			s.pos = s.n
+			if len(s.queue) > 0 {
+				event := s.queue[0]
+				s.queue = s.queue[1:]
 				return event, nil
+			}
+			if s.parseErr != nil {
+				return nil, s.parseErr
 			}
 		}
 		if s.readErr != nil {
 			if errors.Is(s.readErr, io.EOF) {
-				if err := s.framing.End(); err != nil {
+				if err := s.framing.End(emit); err != nil {
 					return nil, err
 				}
+			}
+			if len(s.queue) > 0 {
+				event := s.queue[0]
+				s.queue = s.queue[1:]
+				return event, nil
 			}
 			return nil, s.readErr
 		}
@@ -151,16 +178,22 @@ func (s *sseEvent) writeAndMaybeFlush(w io.Writer) {
 	}
 }
 
-// readResponseBody bounds buffered JSON and error bodies independently of transport limits.
-func readResponseBody(r io.Reader) ([]byte, error) {
-	body, err := io.ReadAll(io.LimitReader(r, sse.DefaultLimit))
+// ErrBodyOverflow reports a buffered response larger than the configured body limit.
+var ErrBodyOverflow = errors.New("MCP response body exceeds configured limit")
+
+// readResponseBody applies an optional limit to buffered JSON and error bodies.
+func readResponseBody(r io.Reader, limits ...int) ([]byte, error) {
+	if len(limits) == 0 || limits[0] <= 0 {
+		return io.ReadAll(r)
+	}
+	body, err := io.ReadAll(io.LimitReader(r, int64(limits[0])))
 	if err != nil {
 		return nil, err
 	}
 	var probe [1]byte
 	n, err := io.ReadFull(r, probe[:])
 	if n != 0 {
-		return nil, sse.ErrOverflow
+		return nil, ErrBodyOverflow
 	}
 	if err != nil && !errors.Is(err, io.EOF) {
 		return nil, err
@@ -170,8 +203,8 @@ func readResponseBody(r io.Reader) ([]byte, error) {
 
 // readSSEJSONResponse returns the first complete JSON-RPC response. Notifications
 // are consumed incrementally. The terminal response need not wait for HTTP EOF.
-func readSSEJSONResponse(r io.Reader) ([]byte, error) {
-	parser := newSSEEventParser(r, "")
+func readSSEJSONResponse(r io.Reader, limits ...int) ([]byte, error) {
+	parser := newSSEEventParser(r, "", limits...)
 	for {
 		event, err := parser.next()
 		if err != nil {
