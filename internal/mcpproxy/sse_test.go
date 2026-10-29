@@ -10,10 +10,13 @@ import (
 	"errors"
 	"io"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/stretchr/testify/require"
+
+	"github.com/envoyproxy/ai-gateway/sse"
 )
 
 // helper to encode a jsonrpc message to use inside data: lines.
@@ -300,12 +303,8 @@ func TestSSEEventParser_IncompleteEvent(t *testing.T) {
 	raw := []byte("event: foo\ndat")
 	p := newSSEEventParser(bytes.NewReader(raw), "mybackend")
 	ev, err := p.next()
-	require.NotNil(t, ev)
-	require.ErrorIs(t, err, io.EOF)
-	require.Equal(t, "mybackend", ev.backend)
-	require.Equal(t, "foo", ev.event)
-	require.Empty(t, ev.id)
-	require.Nil(t, ev.messages)
+	require.Nil(t, ev)
+	require.ErrorIs(t, err, sse.ErrIncomplete)
 }
 
 func TestSSEEventParser_InvalidJSONRPCMessage(t *testing.T) {
@@ -408,4 +407,77 @@ func TestSSEEventParser_EmptyDataLineSkipped(t *testing.T) {
 	require.Len(t, ev2.messages, 1)
 	_, ok := ev2.messages[0].(*jsonrpc.Response)
 	require.True(t, ok)
+}
+
+func TestSSEEventParser_FramingBoundaries(t *testing.T) {
+	t.Run("split CRLF and BOM with multiline JSON", func(t *testing.T) {
+		raw := []byte("\xef\xbb\xbfevent: message\r\nid: 7\r\ndata: {\"jsonrpc\":\"2.0\",\r\ndata: \"method\":\"ping\"}\r\n\r\n")
+		for split := 1; split < len(raw); split++ {
+			p := newSSEEventParser(io.MultiReader(bytes.NewReader(raw[:split]), bytes.NewReader(raw[split:])), "backend")
+			ev, err := p.next()
+			require.NoError(t, err, "split %d", split)
+			require.Equal(t, "7", ev.id)
+			require.Equal(t, "ping", ev.messages[0].(*jsonrpc.Request).Method)
+			_, err = p.next()
+			require.ErrorIs(t, err, io.EOF)
+		}
+	})
+	t.Run("overflow", func(t *testing.T) {
+		p := newSSEEventParser(strings.NewReader("data: "+strings.Repeat("x", sse.DefaultLimit)), "backend")
+		_, err := p.next()
+		require.ErrorIs(t, err, sse.ErrOverflow)
+	})
+	t.Run("partial data discarded", func(t *testing.T) {
+		p := newSSEEventParser(strings.NewReader("data: {\"jsonrpc\":\"2.0\",\"method\":\"ping\"}\n"), "backend")
+		event, err := p.next()
+		require.Nil(t, event)
+		require.ErrorIs(t, err, sse.ErrIncomplete)
+	})
+}
+
+func TestReadResponseBodyBound(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		size     int
+		overflow bool
+	}{
+		{"at limit", sse.DefaultLimit, false},
+		{"over limit", sse.DefaultLimit + 1, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			body, err := readResponseBody(strings.NewReader(strings.Repeat("x", tt.size)))
+			if tt.overflow {
+				require.ErrorIs(t, err, sse.ErrOverflow)
+				require.Nil(t, body)
+			} else {
+				require.NoError(t, err)
+				require.Len(t, body, tt.size)
+			}
+		})
+	}
+}
+
+func TestReadSSEJSONResponse(t *testing.T) {
+	t.Run("multiline response after notification", func(t *testing.T) {
+		payload, err := readSSEJSONResponse(strings.NewReader("data: {\"jsonrpc\":\"2.0\",\"method\":\"ping\"}\r\n\r\n" +
+			"data: {\"jsonrpc\":\"2.0\",\r\ndata: \"id\":1,\"result\":{}}\r\n\r\n"))
+		require.NoError(t, err)
+		require.JSONEq(t, `{"jsonrpc":"2.0","id":1,"result":{}}`, string(payload))
+	})
+	t.Run("partial response", func(t *testing.T) {
+		_, err := readSSEJSONResponse(strings.NewReader("data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n"))
+		require.ErrorIs(t, err, sse.ErrIncomplete)
+	})
+	t.Run("returns terminal error without further reads", func(t *testing.T) {
+		r := io.MultiReader(strings.NewReader("data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-1,\"message\":\"failed\"}}\n\n"), failReader{})
+		payload, err := readSSEJSONResponse(r)
+		require.NoError(t, err)
+		require.Contains(t, string(payload), "failed")
+	})
+}
+
+type failReader struct{}
+
+func (failReader) Read([]byte) (int, error) {
+	return 0, errors.New("unexpected read after terminal response")
 }

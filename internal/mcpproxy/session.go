@@ -439,14 +439,17 @@ func (s *session) sendRequestPerBackend(ctx context.Context, eventChan chan<- *b
 		return nil
 	case http.StatusOK:
 	default:
-		body, _ := io.ReadAll(bodyReader)
+		body, readErr := readResponseBody(bodyReader)
+		if readErr != nil {
+			return fmt.Errorf("read MCP error response: %w", readErr)
+		}
 		return fmt.Errorf("MCP GET request failed with status code %d, body=%s", httpResp.StatusCode, string(body))
 	}
 
 	if isJSONContentType(httpResp.Header.Get("Content-Type")) {
 		// Try to decode as a single JSON-RPC message first.
 		var respBody []byte
-		respBody, err = io.ReadAll(bodyReader)
+		respBody, err = readResponseBody(bodyReader)
 		if err != nil {
 			return fmt.Errorf("failed to read MCP response body: %w", err)
 		}

@@ -742,7 +742,7 @@ func (m *mcpRequestContext) proxyResponseBody(ctx context.Context, s *session, w
 	// SSE parser using the already-read bytes.
 	var sseReader io.Reader = resp.Body
 	if isJSONContentType(resp.Header.Get("Content-Type")) {
-		body, err := io.ReadAll(resp.Body)
+		body, err := readResponseBody(resp.Body)
 		if err != nil {
 			m.l.Error("failed to read response body", slog.String("error", err.Error()))
 			return err
@@ -1379,7 +1379,7 @@ func (m *mcpRequestContext) invokeAndProxyResponse(ctx context.Context, s *sessi
 		ensureHTTPConnectionReused(resp)
 	}()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, err := io.ReadAll(resp.Body)
+		body, err := readResponseBody(resp.Body)
 		if err != nil {
 			onErrorResponse(w, http.StatusInternalServerError, fmt.Sprintf("call to %s failed and failed to read body: %v", backend.Name, err))
 			return err

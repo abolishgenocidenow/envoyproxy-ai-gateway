@@ -14,7 +14,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -541,27 +540,27 @@ func (m *mcpRequestContext) sendModernRequest(ctx context.Context, req *jsonrpc.
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
+		respBody, readErr := readResponseBody(resp.Body)
+		if readErr != nil {
+			return nil, fmt.Errorf("read MCP error response: %w", readErr)
+		}
 		return nil, fmt.Errorf("backend returned status %d: %s", resp.StatusCode, string(respBody))
 	}
 
-	respBody, err := io.ReadAll(resp.Body)
+	var jsonPayload []byte
+	if strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
+		jsonPayload, err = readSSEJSONResponse(resp.Body)
+	} else {
+		jsonPayload, err = readResponseBody(resp.Body)
+		if err == nil {
+			trimmed := bytes.TrimSpace(bytes.TrimPrefix(jsonPayload, utf8BOM))
+			if bytes.HasPrefix(trimmed, []byte("event:")) || bytes.HasPrefix(trimmed, []byte("data:")) || bytes.HasPrefix(trimmed, []byte(":")) {
+				jsonPayload, err = readSSEJSONResponse(bytes.NewReader(jsonPayload))
+			}
+		}
+	}
 	if err != nil {
 		return nil, fmt.Errorf("read response: %w", err)
-	}
-
-	// Determine response format: SSE or plain JSON.
-	contentType := resp.Header.Get("Content-Type")
-	var jsonPayload []byte
-
-	if strings.Contains(contentType, "text/event-stream") || strings.HasPrefix(string(respBody), "event:") || strings.HasPrefix(string(respBody), "data:") {
-		// Parse SSE: find the last "data:" line which contains the JSON-RPC response.
-		jsonPayload = extractJSONFromSSE(respBody)
-		if jsonPayload == nil {
-			return nil, fmt.Errorf("no JSON-RPC response found in SSE stream")
-		}
-	} else {
-		jsonPayload = respBody
 	}
 
 	// Parse JSON-RPC response. Use map to avoid jsonrpc.ID unmarshal issues with sonic.
@@ -607,22 +606,6 @@ func validateModernJSONRPCResponse(req *jsonrpc.Request, rpcResp map[string]json
 		return fmt.Errorf("backend returned no result")
 	}
 	return nil
-}
-
-// extractJSONFromSSE parses an SSE response body and extracts the last JSON-RPC
-// message from "data:" lines. MCP backends return the final result as the last event.
-func extractJSONFromSSE(body []byte) []byte {
-	var lastData []byte
-	for _, line := range strings.Split(string(body), "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "data:") {
-			data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-			if data != "" && data != "[DONE]" {
-				lastData = []byte(data)
-			}
-		}
-	}
-	return lastData
 }
 
 // extractNameForMethod returns the name/uri field for methods that require Mcp-Name header.

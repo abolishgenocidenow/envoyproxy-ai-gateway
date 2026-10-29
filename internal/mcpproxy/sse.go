@@ -17,19 +17,15 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 
 	"github.com/envoyproxy/ai-gateway/internal/filterapi"
+	"github.com/envoyproxy/ai-gateway/sse"
 )
 
 var (
-	sseEventPrefix      = []byte("event:")
-	sseIDPrefix         = []byte("id:")
-	sseDataPrefix       = []byte("data:")
 	sseEventPrefixSpace = []byte("event: ")
 	sseIDPrefixSpace    = []byte("id: ")
 	sseDataPrefixSpace  = []byte("data: ")
 
-	sseCR   = []byte{'\r'}
 	sseLF   = []byte{'\n'}
-	sseCRLF = []byte{'\r', '\n'}
 	sseLFLF = []byte{'\n', '\n'}
 
 	// utf8BOM is the UTF-8 Byte Order Mark (U+FEFF). Some backends prepend this
@@ -43,7 +39,9 @@ type sseEventParser struct {
 	backend filterapi.MCPBackendName
 	r       io.Reader
 	readBuf [4096]byte
-	buf     []byte
+	framing sse.Reader
+	pos, n  int
+	readErr error
 }
 
 func newSSEEventParser(r io.Reader, backend filterapi.MCPBackendName) sseEventParser {
@@ -73,81 +71,51 @@ func isJSONContentType(value string) bool {
 
 // next reads the next SSE event from the stream.
 func (s *sseEventParser) next() (*sseEvent, error) {
-	for {
-		// Search in remainder first for a separator
-		event, ok, err := s.extractEvent()
-		if err != nil {
-			return nil, err
-		}
-		if ok {
-			return event, nil
-		}
-
-		// Read a new chunk
-		n, err := s.r.Read(s.readBuf[:])
-		if n > 0 {
-			normalized := normalizeNewlines(s.readBuf[:n])
-			s.buf = append(s.buf, normalized...)
-			continue
-		}
-
-		if err != nil {
-			// If we still have leftover data, parse the final event
-			if errors.Is(err, io.EOF) && len(s.buf) > 0 {
-				event, parseErr := s.parseEvent(s.buf)
-				s.buf = nil
-				return event, errors.Join(err, parseErr) // wil ignore parseErr if nil.
-			}
-			return nil, err
-		}
-	}
-}
-
-// parseEvent parses one normalized chunk into an sseEvent.
-func (s *sseEventParser) parseEvent(chunk []byte) (*sseEvent, error) {
-	ret := &sseEvent{backend: s.backend}
-
-	for line := range bytes.SplitSeq(chunk, sseLF) {
-		switch {
-		case bytes.HasPrefix(line, sseEventPrefix):
-			ret.event = string(bytes.TrimSpace(line[len(sseEventPrefix):]))
-		case bytes.HasPrefix(line, sseIDPrefix):
-			ret.id = string(bytes.TrimSpace(line[len(sseIDPrefix):]))
-		case bytes.HasPrefix(line, sseDataPrefix):
-			data := bytes.TrimSpace(line[len(sseDataPrefix):])
-			if len(data) == 0 {
-				// Empty data line (e.g. a keep-alive/heartbeat event). There is
-				// nothing to decode, so skip it rather than failing the event.
-				continue
-			}
-			msg, err := jsonrpc.DecodeMessage(data)
+	var event *sseEvent
+	emit := func(e sse.Event) error {
+		ret := &sseEvent{backend: s.backend, event: e.Type, id: e.ID}
+		if len(bytes.TrimSpace(e.Data)) != 0 {
+			msg, err := jsonrpc.DecodeMessage(e.Data)
 			if err != nil {
-				return nil, fmt.Errorf("failed to decode jsonrpc message from sse data: %w", err)
+				return fmt.Errorf("failed to decode jsonrpc message from sse data: %w", err)
 			}
-			ret.messages = append(ret.messages, msg)
+			ret.messages = []jsonrpc.Message{msg}
+		}
+		event = ret
+		return nil
+	}
+	emptyReads := 0
+	for {
+		// Stop after one event without accumulating an unbounded queue of messages.
+		for s.pos < s.n {
+			b := s.readBuf[s.pos : s.pos+1]
+			s.pos++
+			if err := s.framing.Feed(b, emit); err != nil {
+				return nil, err
+			}
+			if event != nil {
+				return event, nil
+			}
+		}
+		if s.readErr != nil {
+			if errors.Is(s.readErr, io.EOF) {
+				if err := s.framing.End(); err != nil {
+					return nil, err
+				}
+			}
+			return nil, s.readErr
+		}
+		s.n, s.readErr = s.r.Read(s.readBuf[:])
+		s.pos = 0
+		if s.n == 0 && s.readErr == nil {
+			emptyReads++
+			if emptyReads >= 100 {
+				return nil, io.ErrNoProgress
+			}
+		} else {
+			emptyReads = 0
 		}
 	}
-
-	return ret, nil
-}
-
-// extractEvent tries to find a complete event (double newline) in remainder.
-func (s *sseEventParser) extractEvent() (*sseEvent, bool, error) {
-	// Search for double newline "\n\n"
-	if idx := bytes.Index(s.buf, sseLFLF); idx >= 0 {
-		chunk := s.buf[:idx]
-		s.buf = s.buf[idx+2:] // retain after separator
-		event, err := s.parseEvent(chunk)
-		return event, true, err
-	}
-	return nil, false, nil
-}
-
-// normalizeNewlines converts all CR/LF variants to '\n'.
-func normalizeNewlines(b []byte) []byte {
-	b = bytes.ReplaceAll(b, sseCRLF, sseLF)
-	b = bytes.ReplaceAll(b, sseCR, sseLF)
-	return b
 }
 
 // sseEvent represents a parsed Server-Sent Event.
@@ -180,5 +148,39 @@ func (s *sseEvent) writeAndMaybeFlush(w io.Writer) {
 	// Flush the response writer to ensure the event is sent immediately.
 	if f, ok := w.(http.Flusher); ok {
 		f.Flush()
+	}
+}
+
+// readResponseBody bounds buffered JSON and error bodies independently of transport limits.
+func readResponseBody(r io.Reader) ([]byte, error) {
+	body, err := io.ReadAll(io.LimitReader(r, sse.DefaultLimit))
+	if err != nil {
+		return nil, err
+	}
+	var probe [1]byte
+	n, err := io.ReadFull(r, probe[:])
+	if n != 0 {
+		return nil, sse.ErrOverflow
+	}
+	if err != nil && !errors.Is(err, io.EOF) {
+		return nil, err
+	}
+	return body, nil
+}
+
+// readSSEJSONResponse returns the first complete JSON-RPC response. Notifications
+// are consumed incrementally. The terminal response need not wait for HTTP EOF.
+func readSSEJSONResponse(r io.Reader) ([]byte, error) {
+	parser := newSSEEventParser(r, "")
+	for {
+		event, err := parser.next()
+		if err != nil {
+			return nil, fmt.Errorf("read MCP SSE response: %w", err)
+		}
+		for _, msg := range event.messages {
+			if response, ok := msg.(*jsonrpc.Response); ok {
+				return jsonrpc.EncodeMessage(response)
+			}
+		}
 	}
 }

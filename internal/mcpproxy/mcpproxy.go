@@ -582,7 +582,10 @@ func (m *mcpRequestContext) initializeSession(ctx context.Context, routeName fil
 			ensureHTTPConnectionReused(resp)
 		}()
 		if resp.StatusCode != http.StatusOK {
-			body, _ := io.ReadAll(resp.Body)
+			body, readErr := readResponseBody(resp.Body)
+			if readErr != nil {
+				return nil, fmt.Errorf("read MCP response: %w", readErr)
+			}
 			return nil, fmt.Errorf("MCP initialize request failed with status code %d and body=%s", resp.StatusCode, string(body))
 		}
 		if m.l.Enabled(ctx, slog.LevelDebug) {
@@ -601,7 +604,10 @@ func (m *mcpRequestContext) initializeSession(ctx context.Context, routeName fil
 		var rawMsg jsonrpc.Message
 		var sseReader io.Reader = resp.Body
 		if resp.Header.Get("Content-Type") != "text/event-stream" {
-			body, _ := io.ReadAll(resp.Body)
+			body, readErr := readResponseBody(resp.Body)
+			if readErr != nil {
+				return nil, fmt.Errorf("read MCP response: %w", readErr)
+			}
 			msg, ok := tryDecodeJSONRPCMessage(body)
 			if ok {
 				rawMsg = msg
@@ -685,7 +691,10 @@ func (m *mcpRequestContext) initializeSession(ctx context.Context, routeName fil
 			ensureHTTPConnectionReused(resp)
 		}()
 		if resp.StatusCode != http.StatusAccepted {
-			body, _ := io.ReadAll(resp.Body)
+			body, readErr := readResponseBody(resp.Body)
+			if readErr != nil {
+				return nil, fmt.Errorf("read MCP response: %w", readErr)
+			}
 			return nil, fmt.Errorf("MCP notifications/initialized request failed with status code %d, body=%s", resp.StatusCode, string(body))
 		}
 		m.metrics.WithBackend(backend.Name).RecordMethodCount(ctx, "notifications/initialized", p)
