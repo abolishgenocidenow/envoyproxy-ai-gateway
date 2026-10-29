@@ -19,8 +19,8 @@ import (
 	"github.com/envoyproxy/ai-gateway/internal/apischema/openai/tokenize"
 	"github.com/envoyproxy/ai-gateway/internal/internalapi"
 	"github.com/envoyproxy/ai-gateway/internal/json"
-	"github.com/envoyproxy/ai-gateway/internal/metrics"
 	"github.com/envoyproxy/ai-gateway/internal/tracing/tracingapi"
+	"github.com/envoyproxy/ai-gateway/usage"
 )
 
 // NewTokenizeToAWSAnthropicTranslator creates a translator for tokenize requests
@@ -180,7 +180,7 @@ func (o *ToAWSAnthropicV1Tokenize) ResponseHeaders(map[string]string) (newHeader
 
 // ResponseBody implements [TokenizeTranslator.ResponseBody] for AWS Anthropic.
 func (o *ToAWSAnthropicV1Tokenize) ResponseBody(_ map[string]string, body io.Reader, _ bool, span tracingapi.TokenizeSpan) (
-	newHeaders []internalapi.Header, newBody []byte, tokenUsage metrics.TokenUsage, responseModel string, err error,
+	newHeaders []internalapi.Header, newBody []byte, tokenUsage usage.TokenUsage, responseModel string, err error,
 ) {
 	bedrockResp := &awsbedrock.CountTokensResponse{}
 	if err = json.NewDecoder(body).Decode(bedrockResp); err != nil {
@@ -195,7 +195,7 @@ func (o *ToAWSAnthropicV1Tokenize) ResponseBody(_ map[string]string, body io.Rea
 
 	newBody, err = json.Marshal(openAIResp)
 	if err != nil {
-		return nil, nil, metrics.TokenUsage{}, "", fmt.Errorf("error marshaling response: %w", err)
+		return nil, nil, usage.TokenUsage{}, "", fmt.Errorf("error marshaling response: %w", err)
 	}
 
 	if span != nil {

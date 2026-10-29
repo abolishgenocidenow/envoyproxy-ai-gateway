@@ -20,8 +20,8 @@ import (
 	"github.com/envoyproxy/ai-gateway/internal/apischema/openai"
 	"github.com/envoyproxy/ai-gateway/internal/internalapi"
 	"github.com/envoyproxy/ai-gateway/internal/json"
-	"github.com/envoyproxy/ai-gateway/internal/metrics"
 	"github.com/envoyproxy/ai-gateway/internal/tracing/tracingapi"
+	"github.com/envoyproxy/ai-gateway/usage"
 )
 
 // NewAnthropicToChatCompletionOpenAITranslator implements [Factory] for Anthropic to OpenAI ChatCompletion translation.
@@ -100,7 +100,7 @@ func (a *anthropicToOpenAIV1ChatCompletionTranslator) ResponseHeaders(_ map[stri
 
 // ResponseBody implements [AnthropicMessagesTranslator.ResponseBody].
 func (a *anthropicToOpenAIV1ChatCompletionTranslator) ResponseBody(_ map[string]string, body io.Reader, endOfStream bool, span tracingapi.MessageSpan) (
-	newHeaders []internalapi.Header, newBody []byte, tokenUsage metrics.TokenUsage, responseModel string, err error,
+	newHeaders []internalapi.Header, newBody []byte, tokenUsage usage.TokenUsage, responseModel string, err error,
 ) {
 	if a.stream {
 		return a.responseBodyStreaming(body, endOfStream)
@@ -110,7 +110,7 @@ func (a *anthropicToOpenAIV1ChatCompletionTranslator) ResponseBody(_ map[string]
 
 // responseBodyNonStreaming converts an OpenAI ChatCompletionResponse to Anthropic MessagesResponse format.
 func (a *anthropicToOpenAIV1ChatCompletionTranslator) responseBodyNonStreaming(body io.Reader, span tracingapi.MessageSpan) (
-	newHeaders []internalapi.Header, newBody []byte, tokenUsage metrics.TokenUsage, responseModel string, err error,
+	newHeaders []internalapi.Header, newBody []byte, tokenUsage usage.TokenUsage, responseModel string, err error,
 ) {
 	responseModel = a.requestModel
 
@@ -121,7 +121,7 @@ func (a *anthropicToOpenAIV1ChatCompletionTranslator) responseBodyNonStreaming(b
 
 	responseModel = cmp.Or(openAIResp.Model, a.requestModel)
 
-	tokenUsage = metrics.ExtractTokenUsageFromExplicitCaching(
+	tokenUsage = usage.ExtractTokenUsageFromExplicitCaching(
 		int64(openAIResp.Usage.PromptTokens),
 		int64(openAIResp.Usage.CompletionTokens),
 		nil,
@@ -152,7 +152,7 @@ func (a *anthropicToOpenAIV1ChatCompletionTranslator) responseBodyNonStreaming(b
 
 // responseBodyStreaming handles converting OpenAI SSE chunks to Anthropic SSE events.
 func (a *anthropicToOpenAIV1ChatCompletionTranslator) responseBodyStreaming(body io.Reader, endOfStream bool) (
-	newHeaders []internalapi.Header, newBody []byte, tokenUsage metrics.TokenUsage, responseModel string, err error,
+	newHeaders []internalapi.Header, newBody []byte, tokenUsage usage.TokenUsage, responseModel string, err error,
 ) {
 	responseModel = a.requestModel
 

@@ -17,8 +17,8 @@ import (
 	typesafeschema "github.com/envoyproxy/ai-gateway/internal/apischema/typesafe"
 	"github.com/envoyproxy/ai-gateway/internal/internalapi"
 	"github.com/envoyproxy/ai-gateway/internal/json"
-	"github.com/envoyproxy/ai-gateway/internal/metrics"
 	"github.com/envoyproxy/ai-gateway/internal/tracing/tracingapi"
+	"github.com/envoyproxy/ai-gateway/usage"
 )
 
 // NewSystemOneTypeSafeToTypeSafeTranslator implements [Factory] for TypeSafe System One passthrough.
@@ -70,7 +70,7 @@ func (t *typeSafeToTypeSafeTranslatorSystemOne) ResponseHeaders(map[string]strin
 // The body is forwarded untouched; it is decoded only for token usage, the
 // resolved model and tracing.
 func (t *typeSafeToTypeSafeTranslatorSystemOne) ResponseBody(_ map[string]string, body io.Reader, _ bool, span tracingapi.SystemOneSpan) (
-	newHeaders []internalapi.Header, newBody []byte, tokenUsage metrics.TokenUsage, responseModel internalapi.ResponseModel, err error,
+	newHeaders []internalapi.Header, newBody []byte, tokenUsage usage.TokenUsage, responseModel internalapi.ResponseModel, err error,
 ) {
 	var resp typesafeschema.SystemOneResponse
 	if err := json.NewDecoder(body).Decode(&resp); err != nil {

@@ -20,7 +20,6 @@ import (
 	anthropicParam "github.com/anthropics/anthropic-sdk-go/packages/param"
 	"github.com/anthropics/anthropic-sdk-go/shared/constant"
 	openAIconstant "github.com/openai/openai-go/shared/constant"
-	"k8s.io/utils/ptr"
 
 	anthropicschema "github.com/envoyproxy/ai-gateway/internal/apischema/anthropic"
 	"github.com/envoyproxy/ai-gateway/internal/apischema/awsbedrock"
@@ -29,8 +28,9 @@ import (
 	"github.com/envoyproxy/ai-gateway/internal/filterapi"
 	"github.com/envoyproxy/ai-gateway/internal/internalapi"
 	"github.com/envoyproxy/ai-gateway/internal/json"
-	"github.com/envoyproxy/ai-gateway/internal/metrics"
+	"github.com/envoyproxy/ai-gateway/internal/ptr"
 	"github.com/envoyproxy/ai-gateway/internal/tracing/tracingapi"
+	"github.com/envoyproxy/ai-gateway/usage"
 )
 
 const (
@@ -875,7 +875,7 @@ type anthropicStreamParser struct {
 	activeMessageID string
 	activeToolCalls map[int64]*streamingToolCall
 	toolIndex       int64
-	tokenUsage      metrics.TokenUsage
+	tokenUsage      usage.TokenUsage
 	stopReason      anthropic.StopReason
 	requestModel    internalapi.RequestModel
 	sentFirstChunk  bool
@@ -1006,7 +1006,7 @@ func (p *anthropicStreamParser) updateInputUsageFromMessageDelta(data []byte) er
 // Process reads from the Anthropic SSE stream, translates events to OpenAI chunks,
 // and returns the mutations for Envoy.
 func (p *anthropicStreamParser) Process(body io.Reader, endOfStream bool, span tracingapi.ChatCompletionSpan) (
-	newHeaders []internalapi.Header, newBody []byte, tokenUsage metrics.TokenUsage, responseModel string, err error,
+	newHeaders []internalapi.Header, newBody []byte, tokenUsage usage.TokenUsage, responseModel string, err error,
 ) {
 	newBody = make([]byte, 0)
 	_ = span // TODO: add support for streaming chunks in tracing.
@@ -1093,7 +1093,7 @@ func (p *anthropicStreamParser) Process(body io.Reader, endOfStream bool, span t
 		if finalChunk.Usage.PromptTokens > 0 || finalChunk.Usage.CompletionTokens > 0 || len(finalChunk.Choices) > 0 {
 			err := serializeOpenAIChatCompletionChunk(&finalChunk, &newBody)
 			if err != nil {
-				return nil, nil, metrics.TokenUsage{}, "", fmt.Errorf("failed to marshal final stream chunk: %w", err)
+				return nil, nil, usage.TokenUsage{}, "", fmt.Errorf("failed to marshal final stream chunk: %w", err)
 			}
 		}
 		// Add the final [DONE] message to indicate the end of the stream.
@@ -1138,7 +1138,7 @@ func (p *anthropicStreamParser) handleAnthropicStreamEvent(eventType []byte, dat
 		p.activeMessageID = event.Message.ID
 		p.created = openai.JSONUNIXTime(time.Now())
 		u := event.Message.Usage
-		usage := metrics.ExtractTokenUsageFromExplicitCaching(
+		tokenCounts := usage.ExtractTokenUsageFromExplicitCaching(
 			u.InputTokens,
 			u.OutputTokens,
 			&u.CacheReadInputTokens,
@@ -1146,13 +1146,13 @@ func (p *anthropicStreamParser) handleAnthropicStreamEvent(eventType []byte, dat
 		)
 		// Set all input token counts (input, cache read, cache creation) from message_start.
 		// message_delta may also contain these fields but only output_tokens is used from it.
-		if input, ok := usage.InputTokens(); ok {
+		if input, ok := tokenCounts.InputTokens(); ok {
 			p.tokenUsage.SetInputTokens(input)
 		}
-		if cached, ok := usage.CachedInputTokens(); ok {
+		if cached, ok := tokenCounts.CachedInputTokens(); ok {
 			p.tokenUsage.SetCachedInputTokens(cached)
 		}
-		if cacheCreation, ok := usage.CacheCreationInputTokens(); ok {
+		if cacheCreation, ok := tokenCounts.CacheCreationInputTokens(); ok {
 			p.tokenUsage.SetCacheCreationInputTokens(cacheCreation)
 		}
 
@@ -1364,7 +1364,7 @@ func (p *anthropicStreamParser) constructOpenAIChatCompletionChunk(delta *openai
 }
 
 // messageToChatCompletion is to translate from anthropic API's response Message into OpenAI API's response ChatCompletion
-func messageToChatCompletion(anthropicResp *anthropic.Message, responseModel internalapi.RequestModel) (openAIResp *openai.ChatCompletionResponse, tokenUsage metrics.TokenUsage, err error) {
+func messageToChatCompletion(anthropicResp *anthropic.Message, responseModel internalapi.RequestModel) (openAIResp *openai.ChatCompletionResponse, tokenUsage usage.TokenUsage, err error) {
 	openAIResp = &openai.ChatCompletionResponse{
 		ID:      anthropicResp.ID,
 		Model:   responseModel,
@@ -1372,14 +1372,14 @@ func messageToChatCompletion(anthropicResp *anthropic.Message, responseModel int
 		Choices: make([]openai.ChatCompletionResponseChoice, 0),
 		Created: openai.JSONUNIXTime(time.Now()),
 	}
-	usage := anthropicResp.Usage
-	tokenUsage = metrics.ExtractTokenUsageFromExplicitCaching(
-		usage.InputTokens,
-		usage.OutputTokens,
-		&usage.CacheReadInputTokens,
-		&usage.CacheCreationInputTokens,
+	tokenCounts := anthropicResp.Usage
+	tokenUsage = usage.ExtractTokenUsageFromExplicitCaching(
+		tokenCounts.InputTokens,
+		tokenCounts.OutputTokens,
+		&tokenCounts.CacheReadInputTokens,
+		&tokenCounts.CacheCreationInputTokens,
 	)
-	tokenUsage.SetReasoningTokens(uint32(usage.OutputTokensDetails.ThinkingTokens)) //nolint:gosec
+	tokenUsage.SetReasoningTokens(uint32(tokenCounts.OutputTokensDetails.ThinkingTokens)) //nolint:gosec
 	inputTokens, _ := tokenUsage.InputTokens()
 	outputTokens, _ := tokenUsage.OutputTokens()
 	totalTokens, _ := tokenUsage.TotalTokens()
@@ -1401,12 +1401,12 @@ func messageToChatCompletion(anthropicResp *anthropic.Message, responseModel int
 
 	finishReason, err := anthropicToOpenAIFinishReason(anthropicResp.StopReason)
 	if err != nil {
-		return nil, metrics.TokenUsage{}, err
+		return nil, usage.TokenUsage{}, err
 	}
 
 	role, err := anthropicRoleToOpenAIRole(anthropic.MessageParamRole(anthropicResp.Role))
 	if err != nil {
-		return nil, metrics.TokenUsage{}, err
+		return nil, usage.TokenUsage{}, err
 	}
 
 	choice := openai.ChatCompletionResponseChoice{
@@ -1422,7 +1422,7 @@ func messageToChatCompletion(anthropicResp *anthropic.Message, responseModel int
 			if output.ID != "" {
 				toolCalls, toolErr := anthropicToolUseToOpenAICalls(output)
 				if toolErr != nil {
-					return nil, metrics.TokenUsage{}, fmt.Errorf("failed to convert anthropic tool use to openai tool call: %w", toolErr)
+					return nil, usage.TokenUsage{}, fmt.Errorf("failed to convert anthropic tool use to openai tool call: %w", toolErr)
 				}
 				choice.Message.ToolCalls = append(choice.Message.ToolCalls, toolCalls...)
 			}

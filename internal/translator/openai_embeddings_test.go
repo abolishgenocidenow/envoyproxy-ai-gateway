@@ -14,7 +14,7 @@ import (
 	"github.com/envoyproxy/ai-gateway/internal/apischema/openai"
 	"github.com/envoyproxy/ai-gateway/internal/internalapi"
 	"github.com/envoyproxy/ai-gateway/internal/json"
-	"github.com/envoyproxy/ai-gateway/internal/metrics"
+	"github.com/envoyproxy/ai-gateway/usage"
 )
 
 func TestOpenAIToOpenAITranslatorV1EmbeddingRequestBody(t *testing.T) {
@@ -93,7 +93,7 @@ func TestOpenAIToOpenAITranslatorV1EmbeddingResponseBody(t *testing.T) {
 		name           string
 		responseBody   string
 		responseStatus string
-		expTokenUsage  metrics.TokenUsage
+		expTokenUsage  usage.TokenUsage
 		expError       bool
 	}{
 		{
@@ -125,7 +125,7 @@ func TestOpenAIToOpenAITranslatorV1EmbeddingResponseBody(t *testing.T) {
 			name:           "error_response",
 			responseBody:   `{"error": {"message": "Invalid input", "type": "BadRequestError"}}`,
 			responseStatus: "400",
-			expTokenUsage:  tokenUsageFrom(0, -1, -1, -1, 0, -1),
+			expTokenUsage:  tokenUsageFrom(-1, -1, -1, -1, -1, -1),
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

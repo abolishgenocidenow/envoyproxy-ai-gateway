@@ -6,7 +6,6 @@
 package translator
 
 import (
-	"bytes"
 	"cmp"
 	"fmt"
 	"io"
@@ -20,8 +19,8 @@ import (
 	anthropicschema "github.com/envoyproxy/ai-gateway/internal/apischema/anthropic"
 	"github.com/envoyproxy/ai-gateway/internal/internalapi"
 	"github.com/envoyproxy/ai-gateway/internal/json"
-	"github.com/envoyproxy/ai-gateway/internal/metrics"
 	"github.com/envoyproxy/ai-gateway/internal/tracing/tracingapi"
+	"github.com/envoyproxy/ai-gateway/usage"
 )
 
 // NewAnthropicToAWSAnthropicTranslator creates a translator for Anthropic to AWS Bedrock Anthropic format.
@@ -36,6 +35,9 @@ func NewAnthropicToAWSAnthropicTranslator(apiVersion string, modelNameOverride i
 }
 
 type anthropicToAWSAnthropicTranslator struct {
+	amazonState  amazonStreamState
+	usageDecoder usage.Decoder
+	streamLimit  int
 	anthropicToAnthropicTranslator
 	apiVersion       string
 	anthropicBetas   []string
@@ -200,23 +202,28 @@ func (a *anthropicToAWSAnthropicTranslator) RequestBody(rawBody []byte, body *an
 
 // ResponseBody implements [AnthropicMessagesTranslator.ResponseBody].
 func (a *anthropicToAWSAnthropicTranslator) ResponseBody(_ map[string]string, body io.Reader, endOfStream bool, span tracingapi.MessageSpan) (
-	newHeaders []internalapi.Header, newBody []byte, tokenUsage metrics.TokenUsage, responseModel string, err error,
+	newHeaders []internalapi.Header, newBody []byte, tokenUsage usage.TokenUsage, responseModel string, err error,
 ) {
 	if !a.stream {
 		return a.anthropicToAnthropicTranslator.ResponseBody(nil, body, endOfStream, span)
 	}
+	defer func() { tokenUsage = a.usageDecoder.Snapshot() }()
+	defer func() {
+		if err == nil && endOfStream && !a.amazonState.terminal {
+			err = ErrMissingTerminal
+		}
+	}()
 	// For streaming responses, AWS somehow wraps each Anthropicschema.MessagesStreamChunk
 	// in an Amazon EventStream message. We need to unwrap these messages and convert them
 	// to SSE format.
 	newBody = make([]byte, 0)
-	var buf []byte
-	buf, err = io.ReadAll(body)
+	err = a.amazonState.read(body, &a.buffered, a.streamLimit, endOfStream, func(msg eventstream.Message) error {
+		return a.convertAmazonMessage(msg, &newBody, span)
+	})
 	if err != nil {
-		err = fmt.Errorf("failed to read body: %w", err)
-		return
+		return nil, newBody, a.streamingTokenUsage, a.requestModel, err
 	}
-	a.buffered = append(a.buffered, buf...)
-	a.convertMessagesEventWrappedInAmazonEventStreamEvent(&newBody, span)
+
 	if endOfStream {
 		// Recalculate total tokens before returning
 		a.updateTotalTokens()
@@ -224,41 +231,37 @@ func (a *anthropicToAWSAnthropicTranslator) ResponseBody(_ map[string]string, bo
 	return nil, newBody, a.streamingTokenUsage, cmp.Or(a.streamingResponseModel, a.requestModel), nil
 }
 
-func (a *anthropicToAWSAnthropicTranslator) convertMessagesEventWrappedInAmazonEventStreamEvent(out *[]byte, span tracingapi.MessageSpan) {
-	// TODO: Maybe reuse the reader and decoder.
-	r := bytes.NewReader(a.buffered)
-	dec := eventstream.NewDecoder()
-	var lastRead int64
-	for {
-		msg, err := dec.Decode(r, nil)
-		if err != nil {
-			a.buffered = a.buffered[lastRead:]
-			return
-		}
-		// This is undocumented struct used to wrap the actual Anthropicschema.MessagesStreamChunk in AWS eventstream.
-		var rawEvent struct {
-			Bytes []byte `json:"bytes"`
-		}
-		if err := json.Unmarshal(msg.Payload, &rawEvent); err != nil {
-			lastRead = r.Size() - int64(r.Len())
-			continue
-		}
-		var event anthropicschema.MessagesStreamChunk
-		if err := json.Unmarshal(rawEvent.Bytes, &event); err != nil {
-			lastRead = r.Size() - int64(r.Len())
-			continue
-		}
-		if span != nil {
-			span.RecordResponseChunk(&event)
-		}
-
-		a.reflectStreamingEvent(&event)
-		*out = append(*out, sseEventPrefixSpace...)
-		*out = append(*out, event.Type...)
-		*out = append(*out, '\n')
-		*out = append(*out, sseDataPrefixSpace...)
-		*out = append(*out, rawEvent.Bytes...)
-		*out = append(*out, '\n', '\n')
-		lastRead = r.Size() - int64(r.Len())
+func (a *anthropicToAWSAnthropicTranslator) convertAmazonMessage(msg eventstream.Message, out *[]byte, span tracingapi.MessageSpan) error {
+	var rawEvent struct {
+		Bytes []byte `json:"bytes"`
 	}
+	if err := json.Unmarshal(msg.Payload, &rawEvent); err != nil {
+		return fmt.Errorf("decode anthropic envelope: %w", err)
+	}
+	a.usageDecoder.Schema = "AWSAnthropic"
+	if _, err := a.usageDecoder.Observe(rawEvent.Bytes); err != nil {
+		return err
+	}
+
+	if err := usage.CheckError("", rawEvent.Bytes); err != nil {
+		return err
+	}
+	var event anthropicschema.MessagesStreamChunk
+	if err := json.Unmarshal(rawEvent.Bytes, &event); err != nil {
+		return fmt.Errorf("decode anthropic event: %w", err)
+	}
+	if span != nil {
+		span.RecordResponseChunk(&event)
+	}
+	a.reflectStreamingEvent(&event)
+	*out = append(*out, sseEventPrefixSpace...)
+	*out = append(*out, event.Type...)
+	*out = append(*out, '\n')
+	*out = append(*out, sseDataPrefixSpace...)
+	*out = append(*out, rawEvent.Bytes...)
+	*out = append(*out, '\n', '\n')
+	return nil
 }
+
+// SetStreamLimit sets the maximum retained binary frame size in bytes.
+func (a *anthropicToAWSAnthropicTranslator) SetStreamLimit(limit int) { a.streamLimit = limit }

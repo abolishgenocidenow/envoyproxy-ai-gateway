@@ -21,6 +21,7 @@ import (
 
 	"github.com/envoyproxy/ai-gateway/internal/controller"
 	"github.com/envoyproxy/ai-gateway/internal/filterapi"
+	"github.com/envoyproxy/ai-gateway/internal/filterconfig"
 	internaltesting "github.com/envoyproxy/ai-gateway/internal/testing"
 	"github.com/envoyproxy/ai-gateway/tests/internal/e2elib"
 	"github.com/envoyproxy/ai-gateway/tests/internal/testupstreamlib"
@@ -309,7 +310,7 @@ func extractFilterConfigFromBundle(ctx context.Context, indexSecretName string) 
 	if err != nil {
 		return "", fmt.Errorf("failed to decode filter config bundle index: %w", err)
 	}
-	index, err := filterapi.UnmarshalConfigBundleIndex(indexRaw)
+	index, err := filterconfig.UnmarshalConfigBundleIndex(indexRaw)
 	if err != nil {
 		return "", err
 	}

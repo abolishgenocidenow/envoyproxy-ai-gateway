@@ -39,6 +39,7 @@ import (
 	"github.com/envoyproxy/ai-gateway/internal/controller"
 	"github.com/envoyproxy/ai-gateway/internal/extensionserver"
 	"github.com/envoyproxy/ai-gateway/internal/filterapi"
+	"github.com/envoyproxy/ai-gateway/internal/filterconfig"
 	"github.com/envoyproxy/ai-gateway/internal/internalapi"
 	"github.com/envoyproxy/ai-gateway/internal/xdg"
 )
@@ -354,12 +355,12 @@ func (runCtx *runCmdContext) writeEnvoyResourcesAndRunExtProc(ctx context.Contex
 		return nil, nil, 0, fmt.Errorf("failed to get filter config index from secret %s", filterConfigIndexSecret.Name)
 	}
 
-	filterConfigIndex, err := filterapi.UnmarshalConfigBundleIndex([]byte(filterConfigIndexRaw))
+	filterConfigIndex, err := filterconfig.UnmarshalConfigBundleIndex([]byte(filterConfigIndexRaw))
 	if err != nil {
 		return nil, nil, 0, fmt.Errorf("failed to parse filter config index: %w", err)
 	}
 
-	fc, err := filterapi.ReassembleBundleConfig(filterConfigIndex, func(part filterapi.ConfigBundlePart) ([]byte, error) {
+	fc, err := filterconfig.ReassembleBundleConfig(filterConfigIndex, func(part filterapi.ConfigBundlePart) ([]byte, error) {
 		partSecret, getErr := runCtx.fakeClientSet.CoreV1().Secrets("").Get(ctx, part.Name, metav1.GetOptions{})
 		if getErr != nil {
 			return nil, getErr
@@ -441,7 +442,7 @@ func writeExtProcConfigBundle(bundlePath string, raw []byte) error {
 	if err := os.WriteFile(partPath, raw, 0o600); err != nil {
 		return err
 	}
-	indexRaw, err := filterapi.MarshalConfigBundleIndex(&filterapi.ConfigBundleIndex{
+	indexRaw, err := filterconfig.MarshalConfigBundleIndex(&filterapi.ConfigBundleIndex{
 		Checksum: filterapi.ConfigBundleChecksum(raw),
 		Parts:    []filterapi.ConfigBundlePart{part},
 	})

@@ -24,13 +24,13 @@ import (
 	openaigo "github.com/openai/openai-go/v3"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
-	"k8s.io/utils/ptr"
 
 	"github.com/envoyproxy/ai-gateway/internal/apischema/awsbedrock"
 	"github.com/envoyproxy/ai-gateway/internal/apischema/openai"
 	"github.com/envoyproxy/ai-gateway/internal/internalapi"
 	"github.com/envoyproxy/ai-gateway/internal/json"
-	"github.com/envoyproxy/ai-gateway/internal/metrics"
+	"github.com/envoyproxy/ai-gateway/internal/ptr"
+	"github.com/envoyproxy/ai-gateway/usage"
 )
 
 const releaseDateUnix = 1731679200 // Represents 2024-11-15 09:00:00 UTC
@@ -1882,7 +1882,7 @@ func TestOpenAIToAWSBedrockTranslatorV1ChatCompletion_ResponseBody(t *testing.T)
 			require.NoError(t, err)
 			require.JSONEq(t, string(expectedBody), string(normalizedBody))
 
-			var expectedUsage metrics.TokenUsage
+			var expectedUsage usage.TokenUsage
 			if tt.input.Usage != nil {
 				expectedUsage = tokenUsageFrom(
 					int32(tt.output.Usage.PromptTokens), // nolint:gosec
@@ -2023,7 +2023,7 @@ func TestOpenAIToAWSBedrockTranslatorExtractAmazonEventStreamEvents(t *testing.T
 	t.Run("all-at-once", func(t *testing.T) {
 		o := &openAIToAWSBedrockTranslatorV1ChatCompletion{}
 		o.bufferedBody = eventBytes
-		o.extractAmazonEventStreamEvents()
+		require.NoError(t, o.extractAmazonEventStreamEvents())
 		require.Len(t, o.events, 3)
 		require.Empty(t, o.bufferedBody)
 		for i, text := range []string{"1", "2", "3"} {
@@ -2034,19 +2034,19 @@ func TestOpenAIToAWSBedrockTranslatorExtractAmazonEventStreamEvents(t *testing.T
 	t.Run("in-chunks", func(t *testing.T) {
 		o := &openAIToAWSBedrockTranslatorV1ChatCompletion{}
 		o.bufferedBody = eventBytes[0:1]
-		o.extractAmazonEventStreamEvents()
+		require.NoError(t, o.extractAmazonEventStreamEvents())
 		require.Empty(t, o.events)
 		require.Len(t, o.bufferedBody, 1)
 
 		o.bufferedBody = eventBytes[0 : offsets[1]+5]
-		o.extractAmazonEventStreamEvents()
+		require.NoError(t, o.extractAmazonEventStreamEvents())
 		require.Len(t, o.events, 1)
 		require.Equal(t, eventBytes[offsets[1]:offsets[1]+5], o.bufferedBody)
 
 		clear(o.events)
 		o.events = o.events[:0]
 		o.bufferedBody = eventBytes[0 : offsets[2]+5]
-		o.extractAmazonEventStreamEvents()
+		require.NoError(t, o.extractAmazonEventStreamEvents())
 		require.Len(t, o.events, 2)
 		require.Equal(t, eventBytes[offsets[2]:offsets[2]+5], o.bufferedBody)
 	})
@@ -2056,7 +2056,7 @@ func TestOpenAIToAWSBedrockTranslatorExtractAmazonEventStreamEvents(t *testing.T
 		var err error
 		o.bufferedBody, err = base64.StdEncoding.DecodeString(base64RealStreamingEvents)
 		require.NoError(t, err)
-		o.extractAmazonEventStreamEvents()
+		require.NoError(t, o.extractAmazonEventStreamEvents())
 
 		var texts []string
 		var usage *awsbedrock.TokenUsage
@@ -2230,7 +2230,7 @@ func TestOpenAIToAWSBedrockTranslatorV1ChatCompletion_Streaming_WithReasoning(t 
 				Text: ptr.To("12231."),
 			},
 		},
-		{StopReason: ptr.To(awsbedrock.StopReasonEndTurn)},
+		{EventType: "messageStop", StopReason: ptr.To(awsbedrock.StopReasonEndTurn)},
 	}
 
 	buf := bytes.NewBuffer(nil)
@@ -2242,7 +2242,7 @@ func TestOpenAIToAWSBedrockTranslatorV1ChatCompletion_Streaming_WithReasoning(t 
 		// This header is a simplification; the real stream has more, but this is sufficient for the decoder.
 		err = encoder.Encode(buf, eventstream.Message{
 			Headers: eventstream.Headers{
-				{Name: ":event-type", Value: eventstream.StringValue("chunk")},
+				{Name: ":event-type", Value: eventstream.StringValue(event.EventType)},
 			},
 			Payload: payload,
 		})
@@ -2522,7 +2522,7 @@ func TestOpenAIToAWSBedrockTranslatorV1ChatCompletion_Streaming_WithRedactedCont
 		payload, err := json.Marshal(event)
 		require.NoError(t, err)
 		err = encoder.Encode(buf, eventstream.Message{
-			Headers: eventstream.Headers{{Name: ":event-type", Value: eventstream.StringValue("chunk")}},
+			Headers: eventstream.Headers{{Name: ":event-type", Value: eventstream.StringValue(event.EventType)}},
 			Payload: payload,
 		})
 		require.NoError(t, err)
@@ -2880,7 +2880,7 @@ func TestOpenAIToAWSBedrockTranslatorV1ChatCompletion_Streaming_ResponseBody_Mar
 				Text: ptr.To("hello"),
 			},
 		},
-		{StopReason: ptr.To(awsbedrock.StopReasonEndTurn)},
+		{EventType: "messageStop", StopReason: ptr.To(awsbedrock.StopReasonEndTurn)},
 	}
 
 	buf := bytes.NewBuffer(nil)
@@ -2890,7 +2890,7 @@ func TestOpenAIToAWSBedrockTranslatorV1ChatCompletion_Streaming_ResponseBody_Mar
 		require.NoError(t, err)
 		err = encoder.Encode(buf, eventstream.Message{
 			Headers: eventstream.Headers{
-				{Name: ":event-type", Value: eventstream.StringValue("chunk")},
+				{Name: ":event-type", Value: eventstream.StringValue(event.EventType)},
 			},
 			Payload: payload,
 		})
@@ -2921,7 +2921,7 @@ func TestOpenAIToAWSBedrockTranslatorV1ChatCompletion_ResponseBody_NullContentBl
 	respBody := []byte(`{"output":{"message":{"role":"assistant","content":[null,{"text":"Hello!"}]}},"stopReason":"end_turn","usage":{"inputTokens":10,"outputTokens":20,"totalTokens":30}}`)
 	o := &openAIToAWSBedrockTranslatorV1ChatCompletion{}
 	var body []byte
-	var tokenUsage metrics.TokenUsage
+	var tokenUsage usage.TokenUsage
 	var err error
 	require.NotPanics(t, func() {
 		_, body, tokenUsage, _, err = o.ResponseBody(nil, bytes.NewBuffer(respBody), false, nil)
@@ -2929,4 +2929,15 @@ func TestOpenAIToAWSBedrockTranslatorV1ChatCompletion_ResponseBody_NullContentBl
 	require.NoError(t, err)
 	require.Contains(t, string(body), "Hello!")
 	require.Equal(t, tokenUsageFrom(10, -1, -1, 20, 30, -1), tokenUsage)
+}
+
+func TestBedrockThinkingRequestOrder(t *testing.T) {
+	var request openai.ChatCompletionRequest
+	require.NoError(t, json.Unmarshal([]byte(`{"model":"test","stream":true,"messages":[{"role":"system","content":"You are a chatbot."}],"thinking":{"type":"enabled","budget_tokens":4096}}`), &request))
+	for range 100 {
+		tr := NewChatCompletionOpenAIToAWSBedrockTranslator("")
+		_, body, err := tr.RequestBody(nil, &request, false)
+		require.NoError(t, err)
+		require.Equal(t, `{"additionalModelRequestFields":{"thinking":{"budget_tokens":4096,"type":"enabled"}},"inferenceConfig":{},"messages":[],"system":[{"text":"You are a chatbot."}]}`, string(body)) //nolint:testifylint // Verify wire key order, not just JSON equivalence.
+	}
 }

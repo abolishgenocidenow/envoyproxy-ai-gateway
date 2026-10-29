@@ -17,6 +17,7 @@ import (
 
 	runtimeapi "github.com/envoyproxy/ai-gateway/api/runtime"
 	"github.com/envoyproxy/ai-gateway/internal/filterapi"
+	"github.com/envoyproxy/ai-gateway/internal/filterconfig"
 	"github.com/envoyproxy/ai-gateway/internal/version"
 	"github.com/envoyproxy/ai-gateway/mcp"
 )
@@ -91,7 +92,7 @@ var errConfigWatcherStopped = errors.New("configuration watcher stopped")
 
 type configReceiver struct {
 	target   ConfigTarget
-	receiver filterapi.ConfigReceiver
+	receiver filterconfig.ConfigReceiver
 	// validate checks scoped snapshots from custom sources before loading them.
 	// File subscriptions retain their existing loader semantics.
 	validate func(*filterapi.Config) error
@@ -111,7 +112,7 @@ func resolveConfigSubscriptionFactory(runtimeCtx context.Context, opts Options, 
 	if opts.ConfigWatcherFactory == nil {
 		return func(receiver configReceiver) (configSubscription, error) {
 			return func(ctx context.Context, initialized chan struct{}) error {
-				return filterapi.RunConfigBundleWatcher(ctx, bundlePath, receiver.receiver,
+				return filterconfig.RunConfigBundleWatcher(ctx, bundlePath, receiver.receiver,
 					logger.With("config_target", receiver.target), 5*time.Second, func() { close(initialized) })
 			}, nil
 		}

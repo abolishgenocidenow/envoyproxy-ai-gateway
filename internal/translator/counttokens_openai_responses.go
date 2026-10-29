@@ -16,8 +16,8 @@ import (
 	"github.com/envoyproxy/ai-gateway/internal/apischema/openai"
 	"github.com/envoyproxy/ai-gateway/internal/internalapi"
 	"github.com/envoyproxy/ai-gateway/internal/json"
-	"github.com/envoyproxy/ai-gateway/internal/metrics"
 	"github.com/envoyproxy/ai-gateway/internal/tracing/tracingapi"
+	"github.com/envoyproxy/ai-gateway/usage"
 )
 
 // NewResponsesInputTokensOpenAIToOpenAITranslator creates a passthrough translator for OpenAI /v1/responses/input_tokens.
@@ -62,7 +62,7 @@ func (t *responsesInputTokensToOpenAITranslator) ResponseHeaders(_ map[string]st
 
 // ResponseBody implements [OpenAIResponsesInputTokensTranslator.ResponseBody].
 func (t *responsesInputTokensToOpenAITranslator) ResponseBody(_ map[string]string, body io.Reader, _ bool, span tracingapi.ResponsesInputTokensSpan) (
-	newHeaders []internalapi.Header, newBody []byte, tokenUsage metrics.TokenUsage, responseModel internalapi.ResponseModel, err error,
+	newHeaders []internalapi.Header, newBody []byte, tokenUsage usage.TokenUsage, responseModel internalapi.ResponseModel, err error,
 ) {
 	resp := &openai.ResponsesInputTokensResponse{}
 	if err := json.NewDecoder(body).Decode(resp); err != nil {

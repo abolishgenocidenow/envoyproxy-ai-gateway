@@ -59,6 +59,8 @@ type Options struct {
 	Transport          Transport
 	SessionCrypto      SessionCrypto
 	MaxRequestBodySize int64
+	// MaxResponseBodySize bounds each buffered response body and SSE event. Zero disables the cap.
+	MaxResponseBodySize int
 }
 
 // Proxy owns request cancellation and compiled configuration, not network listeners.
@@ -78,7 +80,7 @@ func New(options Options) (*Proxy, error) {
 	if options.Select == nil || options.Transport == nil || options.SessionCrypto == nil {
 		return nil, errors.New("selector, transport and session crypto are required")
 	}
-	if options.MaxRequestBodySize < 0 {
+	if options.MaxRequestBodySize < 0 || options.MaxResponseBodySize < 0 {
 		return nil, errors.New("negative body limit")
 	}
 	if options.MaxRequestBodySize == 0 {
@@ -86,7 +88,7 @@ func New(options Options) (*Proxy, error) {
 	}
 	stop, cancel := context.WithCancel(context.Background())
 	engine, handler, err := mcpproxy.NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), metrics.NewMCP(noop.NewMeterProvider().Meter("mcp"), nil), tracingapi.NoopMCPTracer{}, options.SessionCrypto, nil, mcpproxy.HandlerOptions{
-		Select: options.Select, MaxRequestBodySize: options.MaxRequestBodySize,
+		Select: options.Select, MaxRequestBodySize: options.MaxRequestBodySize, MaxResponseBodySize: options.MaxResponseBodySize,
 		Client: http.Client{Transport: mcpproxy.NewBackendTransport(stop, options.Transport), CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }},
 	})
 	if err != nil {

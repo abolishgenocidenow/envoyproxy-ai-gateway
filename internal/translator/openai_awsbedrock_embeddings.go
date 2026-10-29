@@ -16,8 +16,8 @@ import (
 	"github.com/envoyproxy/ai-gateway/internal/apischema/openai"
 	"github.com/envoyproxy/ai-gateway/internal/internalapi"
 	"github.com/envoyproxy/ai-gateway/internal/json"
-	"github.com/envoyproxy/ai-gateway/internal/metrics"
 	"github.com/envoyproxy/ai-gateway/internal/tracing/tracingapi"
+	"github.com/envoyproxy/ai-gateway/usage"
 )
 
 // NewEmbeddingOpenAIToAWSBedrockTranslator implements [Factory] for OpenAI to AWS Bedrock embedding translation.
@@ -87,7 +87,7 @@ func (o *openAIToAWSBedrockTranslatorV1Embedding) ResponseHeaders(_ map[string]s
 // ResponseBody implements [OpenAIEmbeddingTranslator.ResponseBody].
 // Decodes the InvokeModel response and converts it to an OpenAI EmbeddingResponse.
 func (o *openAIToAWSBedrockTranslatorV1Embedding) ResponseBody(_ map[string]string, body io.Reader, _ bool, span tracingapi.EmbeddingsSpan) (
-	newHeaders []internalapi.Header, mutatedBody []byte, tokenUsage metrics.TokenUsage, responseModel internalapi.ResponseModel, err error,
+	newHeaders []internalapi.Header, mutatedBody []byte, tokenUsage usage.TokenUsage, responseModel internalapi.ResponseModel, err error,
 ) {
 	var titanResp awsbedrock.TitanEmbeddingResponse
 	if err = json.NewDecoder(body).Decode(&titanResp); err != nil {

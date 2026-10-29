@@ -14,8 +14,8 @@ import (
 	"github.com/envoyproxy/ai-gateway/internal/apischema/openai"
 	"github.com/envoyproxy/ai-gateway/internal/internalapi"
 	"github.com/envoyproxy/ai-gateway/internal/json"
-	"github.com/envoyproxy/ai-gateway/internal/metrics"
 	"github.com/envoyproxy/ai-gateway/internal/tracing/tracingapi"
+	"github.com/envoyproxy/ai-gateway/usage"
 )
 
 // NewTranslationOpenAIToOpenAITranslator implements [OpenAIAudioTranslationTranslator]
@@ -71,7 +71,7 @@ func (o *openAIToOpenAITranslatorV1Translation) ResponseHeaders(_ map[string]str
 
 // ResponseBody implements [OpenAIAudioTranslationTranslator.ResponseBody].
 func (o *openAIToOpenAITranslatorV1Translation) ResponseBody(_ map[string]string, body io.Reader, _ bool, span tracingapi.TranslationSpan) (
-	newHeaders []internalapi.Header, newBody []byte, tokenUsage metrics.TokenUsage, responseModel internalapi.ResponseModel, err error,
+	newHeaders []internalapi.Header, newBody []byte, tokenUsage usage.TokenUsage, responseModel internalapi.ResponseModel, err error,
 ) {
 	responseModel = o.requestModel
 	if span != nil {

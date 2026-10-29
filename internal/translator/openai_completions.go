@@ -17,8 +17,8 @@ import (
 	"github.com/envoyproxy/ai-gateway/internal/apischema/openai"
 	"github.com/envoyproxy/ai-gateway/internal/internalapi"
 	"github.com/envoyproxy/ai-gateway/internal/json"
-	"github.com/envoyproxy/ai-gateway/internal/metrics"
 	"github.com/envoyproxy/ai-gateway/internal/tracing/tracingapi"
+	"github.com/envoyproxy/ai-gateway/usage"
 )
 
 // NewCompletionOpenAIToOpenAITranslator implements [Factory] for OpenAI to OpenAI translation for completions.
@@ -77,7 +77,7 @@ func (o *openAIToOpenAITranslatorV1Completion) ResponseHeaders(map[string]string
 // OpenAI completions support model virtualization through automatic routing and resolution,
 // so we return the actual model from the response body which may differ from the requested model.
 func (o *openAIToOpenAITranslatorV1Completion) ResponseBody(_ map[string]string, body io.Reader, _ bool, span tracingapi.CompletionSpan) (
-	newHeaders []internalapi.Header, newBody []byte, tokenUsage metrics.TokenUsage, responseModel internalapi.ResponseModel, err error,
+	newHeaders []internalapi.Header, newBody []byte, tokenUsage usage.TokenUsage, responseModel internalapi.ResponseModel, err error,
 ) {
 	// For streaming, just pass through and extract metadata from SSE chunks
 	if o.stream {
@@ -146,7 +146,7 @@ func (o *openAIToOpenAITranslatorV1Completion) ResponseBody(_ map[string]string,
 // extractUsageFromBufferEvent extracts the token usage and model from the buffered SSE events.
 // It scans complete lines and returns the latest usage found in this batch.
 // It also records each parsed chunk to the tracing span if provided.
-func (o *openAIToOpenAITranslatorV1Completion) extractUsageFromBufferEvent(span tracingapi.CompletionSpan) (tokenUsage metrics.TokenUsage) {
+func (o *openAIToOpenAITranslatorV1Completion) extractUsageFromBufferEvent(span tracingapi.CompletionSpan) (tokenUsage usage.TokenUsage) {
 	for {
 		i := bytes.IndexByte(o.buffered, '\n')
 		if i == -1 {
@@ -179,16 +179,16 @@ func (o *openAIToOpenAITranslatorV1Completion) extractUsageFromBufferEvent(span 
 			span.RecordResponseChunk(event)
 		}
 
-		if usage := event.Usage; usage != nil {
-			tokenUsage.SetInputTokens(uint32(usage.PromptTokens))      //nolint:gosec
-			tokenUsage.SetOutputTokens(uint32(usage.CompletionTokens)) //nolint:gosec
-			tokenUsage.SetTotalTokens(uint32(usage.TotalTokens))       //nolint:gosec
-			if usage.PromptTokensDetails != nil {
-				tokenUsage.SetCachedInputTokens(uint32(usage.PromptTokensDetails.CachedTokens))                   //nolint:gosec
-				tokenUsage.SetCacheCreationInputTokens(uint32(usage.PromptTokensDetails.CacheWriteTokensValue())) //nolint:gosec
+		if tokenCounts := event.Usage; tokenCounts != nil {
+			tokenUsage.SetInputTokens(uint32(tokenCounts.PromptTokens))      //nolint:gosec
+			tokenUsage.SetOutputTokens(uint32(tokenCounts.CompletionTokens)) //nolint:gosec
+			tokenUsage.SetTotalTokens(uint32(tokenCounts.TotalTokens))       //nolint:gosec
+			if tokenCounts.PromptTokensDetails != nil {
+				tokenUsage.SetCachedInputTokens(uint32(tokenCounts.PromptTokensDetails.CachedTokens))                   //nolint:gosec
+				tokenUsage.SetCacheCreationInputTokens(uint32(tokenCounts.PromptTokensDetails.CacheWriteTokensValue())) //nolint:gosec
 			}
-			if usage.CompletionTokensDetails != nil {
-				tokenUsage.SetReasoningTokens(uint32(usage.CompletionTokensDetails.ReasoningTokens)) //nolint:gosec
+			if tokenCounts.CompletionTokensDetails != nil {
+				tokenUsage.SetReasoningTokens(uint32(tokenCounts.CompletionTokensDetails.ReasoningTokens)) //nolint:gosec
 			}
 			// Do not mark buffering done; keep scanning to return the latest usage in this batch.
 		}

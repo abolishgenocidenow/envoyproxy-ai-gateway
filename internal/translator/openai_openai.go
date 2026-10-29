@@ -21,9 +21,9 @@ import (
 	"github.com/envoyproxy/ai-gateway/internal/apischema/openai"
 	"github.com/envoyproxy/ai-gateway/internal/internalapi"
 	"github.com/envoyproxy/ai-gateway/internal/json"
-	"github.com/envoyproxy/ai-gateway/internal/metrics"
 	"github.com/envoyproxy/ai-gateway/internal/redaction"
 	"github.com/envoyproxy/ai-gateway/internal/tracing/tracingapi"
+	"github.com/envoyproxy/ai-gateway/usage"
 )
 
 // NewChatCompletionOpenAIToOpenAITranslator implements [Factory] for OpenAI to OpenAI translation.
@@ -141,7 +141,7 @@ func (o *openAIToOpenAITranslatorV1ChatCompletion) ResponseHeaders(map[string]st
 // so we return the actual model from the response body which may differ from the requested model
 // (e.g., request "gpt-4o" → response "gpt-4o-2024-08-06").
 func (o *openAIToOpenAITranslatorV1ChatCompletion) ResponseBody(_ map[string]string, body io.Reader, _ bool, span tracingapi.ChatCompletionSpan) (
-	newHeaders []internalapi.Header, newBody []byte, tokenUsage metrics.TokenUsage, responseModel string, err error,
+	newHeaders []internalapi.Header, newBody []byte, tokenUsage usage.TokenUsage, responseModel string, err error,
 ) {
 	if o.stream {
 		var buf []byte
@@ -196,7 +196,7 @@ func (o *openAIToOpenAITranslatorV1ChatCompletion) ResponseBody(_ map[string]str
 
 // extractUsageFromBufferEvent extracts the token usage from the buffered event.
 // It scans complete lines and returns the latest usage found in this batch.
-func (o *openAIToOpenAITranslatorV1ChatCompletion) extractUsageFromBufferEvent(span tracingapi.ChatCompletionSpan) (tokenUsage metrics.TokenUsage) {
+func (o *openAIToOpenAITranslatorV1ChatCompletion) extractUsageFromBufferEvent(span tracingapi.ChatCompletionSpan) (tokenUsage usage.TokenUsage) {
 	for {
 		i := bytes.IndexByte(o.buffered, '\n')
 		if i == -1 {
@@ -219,16 +219,16 @@ func (o *openAIToOpenAITranslatorV1ChatCompletion) extractUsageFromBufferEvent(s
 			// Store the response model for future batches
 			o.streamingResponseModel = event.Model
 		}
-		if usage := event.Usage; usage != nil {
-			tokenUsage.SetInputTokens(uint32(usage.PromptTokens))      //nolint:gosec
-			tokenUsage.SetOutputTokens(uint32(usage.CompletionTokens)) //nolint:gosec
-			tokenUsage.SetTotalTokens(uint32(usage.TotalTokens))       //nolint:gosec
-			if usage.PromptTokensDetails != nil {
-				tokenUsage.SetCachedInputTokens(uint32(usage.PromptTokensDetails.CachedTokens))                   //nolint:gosec
-				tokenUsage.SetCacheCreationInputTokens(uint32(usage.PromptTokensDetails.CacheWriteTokensValue())) //nolint:gosec
+		if tokenCounts := event.Usage; tokenCounts != nil {
+			tokenUsage.SetInputTokens(uint32(tokenCounts.PromptTokens))      //nolint:gosec
+			tokenUsage.SetOutputTokens(uint32(tokenCounts.CompletionTokens)) //nolint:gosec
+			tokenUsage.SetTotalTokens(uint32(tokenCounts.TotalTokens))       //nolint:gosec
+			if tokenCounts.PromptTokensDetails != nil {
+				tokenUsage.SetCachedInputTokens(uint32(tokenCounts.PromptTokensDetails.CachedTokens))                   //nolint:gosec
+				tokenUsage.SetCacheCreationInputTokens(uint32(tokenCounts.PromptTokensDetails.CacheWriteTokensValue())) //nolint:gosec
 			}
-			if usage.CompletionTokensDetails != nil {
-				tokenUsage.SetReasoningTokens(uint32(usage.CompletionTokensDetails.ReasoningTokens)) //nolint:gosec
+			if tokenCounts.CompletionTokensDetails != nil {
+				tokenUsage.SetReasoningTokens(uint32(tokenCounts.CompletionTokensDetails.ReasoningTokens)) //nolint:gosec
 			}
 			// Do not mark buffering done; keep scanning to return the latest usage in this batch.
 		}

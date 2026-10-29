@@ -17,7 +17,7 @@ import (
 	"github.com/envoyproxy/ai-gateway/internal/apischema/openai"
 	"github.com/envoyproxy/ai-gateway/internal/internalapi"
 	"github.com/envoyproxy/ai-gateway/internal/json"
-	"github.com/envoyproxy/ai-gateway/internal/metrics"
+	"github.com/envoyproxy/ai-gateway/usage"
 )
 
 func TestOpenAIToGCPVertexAITranslatorV1Embedding_RequestBody(t *testing.T) {
@@ -637,7 +637,7 @@ func TestOpenAIToGCPVertexAITranslatorV1Embedding_ResponseBody(t *testing.T) {
 		name             string
 		gcpResponse      string
 		wantError        bool
-		wantTokenUsage   metrics.TokenUsage
+		wantTokenUsage   usage.TokenUsage
 		wantResponseBody openai.EmbeddingResponse
 	}{
 		{
@@ -883,7 +883,7 @@ func TestOpenAIToGCPVertexAITranslatorV1Embedding_ResponseBody(t *testing.T) {
 			require.Equal(t, "text-embedding-004", responseModel)
 
 			// Check token usage
-			if diff := cmp.Diff(tc.wantTokenUsage, tokenUsage, cmp.AllowUnexported(metrics.TokenUsage{})); diff != "" {
+			if diff := cmp.Diff(tc.wantTokenUsage, tokenUsage, cmp.AllowUnexported(usage.TokenUsage{})); diff != "" {
 				t.Errorf("TokenUsage mismatch (-want +got):\n%s", diff)
 			}
 
@@ -1014,7 +1014,7 @@ func TestOpenAIToGCPVertexAITranslatorV1Embedding_EmbedContentResponseBody(t *te
 		name             string
 		gcpResponse      string
 		wantError        bool
-		wantTokenUsage   metrics.TokenUsage
+		wantTokenUsage   usage.TokenUsage
 		wantResponseBody openai.EmbeddingResponse
 	}{
 		{
@@ -1135,7 +1135,7 @@ func TestOpenAIToGCPVertexAITranslatorV1Embedding_EmbedContentResponseBody(t *te
 			require.NotNil(t, bodyMut)
 			require.Equal(t, "gemini-embedding-2-preview", responseModel)
 
-			if diff := cmp.Diff(tc.wantTokenUsage, tokenUsage, cmp.AllowUnexported(metrics.TokenUsage{})); diff != "" {
+			if diff := cmp.Diff(tc.wantTokenUsage, tokenUsage, cmp.AllowUnexported(usage.TokenUsage{})); diff != "" {
 				t.Errorf("TokenUsage mismatch (-want +got):\n%s", diff)
 			}
 

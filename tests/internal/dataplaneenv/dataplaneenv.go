@@ -24,6 +24,7 @@ import (
 
 	"github.com/envoyproxy/ai-gateway/cmd/extproc/mainlib"
 	"github.com/envoyproxy/ai-gateway/internal/filterapi"
+	"github.com/envoyproxy/ai-gateway/internal/filterconfig"
 	"github.com/envoyproxy/ai-gateway/internal/pprof"
 	internaltesting "github.com/envoyproxy/ai-gateway/internal/testing"
 	testsinternal "github.com/envoyproxy/ai-gateway/tests/internal"
@@ -302,7 +303,7 @@ func requireExtProc(t testing.TB, out io.Writer, config string, env []string, ex
 	partPath := filepath.Join(configBundlePath, filepath.FromSlash(part.Path))
 	require.NoError(t, os.MkdirAll(filepath.Dir(partPath), 0o700))
 	require.NoError(t, os.WriteFile(partPath, configRaw, 0o600))
-	indexRaw, err := filterapi.MarshalConfigBundleIndex(&filterapi.ConfigBundleIndex{
+	indexRaw, err := filterconfig.MarshalConfigBundleIndex(&filterapi.ConfigBundleIndex{
 		Checksum: filterapi.ConfigBundleChecksum(configRaw),
 		Parts:    []filterapi.ConfigBundlePart{part},
 	})

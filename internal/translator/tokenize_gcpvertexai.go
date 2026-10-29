@@ -17,8 +17,8 @@ import (
 	"github.com/envoyproxy/ai-gateway/internal/apischema/openai/tokenize"
 	"github.com/envoyproxy/ai-gateway/internal/internalapi"
 	"github.com/envoyproxy/ai-gateway/internal/json"
-	"github.com/envoyproxy/ai-gateway/internal/metrics"
 	"github.com/envoyproxy/ai-gateway/internal/tracing/tracingapi"
+	"github.com/envoyproxy/ai-gateway/usage"
 )
 
 // NewTokenizeToGCPVertexAITranslator implements [Factory] for tokenize to GCP Vertex AI translation.
@@ -155,7 +155,7 @@ func (o *ToGCPVertexAIV1Tokenize) ResponseHeaders(map[string]string) (newHeaders
 // is exactly what gets executed. The response does not contain a model field, so we return
 // the request model that was originally sent.
 func (o *ToGCPVertexAIV1Tokenize) ResponseBody(_ map[string]string, body io.Reader, _ bool, span tracingapi.TokenizeSpan) (
-	newHeaders []internalapi.Header, newBody []byte, tokenUsage metrics.TokenUsage, responseModel string, err error,
+	newHeaders []internalapi.Header, newBody []byte, tokenUsage usage.TokenUsage, responseModel string, err error,
 ) {
 	gcpResp := &genai.CountTokensResponse{}
 	if err = json.NewDecoder(body).Decode(gcpResp); err != nil {
@@ -167,13 +167,13 @@ func (o *ToGCPVertexAIV1Tokenize) ResponseBody(_ map[string]string, body io.Read
 	// Convert to OpenAI format.
 	openAIResp, err := o.geminiCountTokenToResponse(gcpResp)
 	if err != nil {
-		return nil, nil, metrics.TokenUsage{}, "", fmt.Errorf("error converting GCP response to OpenAI format: %w", err)
+		return nil, nil, usage.TokenUsage{}, "", fmt.Errorf("error converting GCP response to OpenAI format: %w", err)
 	}
 
 	// Marshal the OpenAI response.
 	newBody, err = json.Marshal(openAIResp)
 	if err != nil {
-		return nil, nil, metrics.TokenUsage{}, "", fmt.Errorf("error marshaling OpenAI response: %w", err)
+		return nil, nil, usage.TokenUsage{}, "", fmt.Errorf("error marshaling OpenAI response: %w", err)
 	}
 
 	if span != nil {

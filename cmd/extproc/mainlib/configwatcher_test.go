@@ -26,6 +26,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 
 	"github.com/envoyproxy/ai-gateway/internal/filterapi"
+	"github.com/envoyproxy/ai-gateway/internal/filterconfig"
 	"github.com/envoyproxy/ai-gateway/internal/version"
 )
 
@@ -473,7 +474,7 @@ func TestDefaultConfigSubscriptions(t *testing.T) {
 					}
 					require.NoError(t, os.WriteFile(partPath, raw, 0o600))
 				}
-				index, err := filterapi.MarshalConfigBundleIndex(&filterapi.ConfigBundleIndex{
+				index, err := filterconfig.MarshalConfigBundleIndex(&filterapi.ConfigBundleIndex{
 					Checksum: filterapi.ConfigBundleChecksum(payload), Parts: []filterapi.ConfigBundlePart{part},
 				})
 				require.NoError(t, err)
@@ -546,7 +547,7 @@ func TestMainDrainsActiveStream(t *testing.T) {
 	partPath := filepath.Join(bundlePath, part.Path)
 	require.NoError(t, os.MkdirAll(filepath.Dir(partPath), 0o700))
 	require.NoError(t, os.WriteFile(partPath, payload, 0o600))
-	index, err := filterapi.MarshalConfigBundleIndex(&filterapi.ConfigBundleIndex{
+	index, err := filterconfig.MarshalConfigBundleIndex(&filterapi.ConfigBundleIndex{
 		Checksum: filterapi.ConfigBundleChecksum(payload), Parts: []filterapi.ConfigBundlePart{part},
 	})
 	require.NoError(t, err)

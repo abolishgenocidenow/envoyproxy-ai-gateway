@@ -3,7 +3,7 @@
 // The full text of the Apache license is available in the LICENSE file at
 // the root of the repo.
 
-package filterapi
+package filterconfig
 
 import (
 	"errors"
@@ -11,13 +11,15 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"sigs.k8s.io/yaml"
+
+	"github.com/envoyproxy/ai-gateway/internal/filterapi"
 )
 
 func TestReassembleBundleConfig(t *testing.T) {
 	cfgRaw := []byte("version: dev\nbackends:\n- name: openai\n")
-	index := &ConfigBundleIndex{
-		Checksum: ConfigBundleChecksum(cfgRaw),
-		Parts: []ConfigBundlePart{
+	index := &filterapi.ConfigBundleIndex{
+		Checksum: filterapi.ConfigBundleChecksum(cfgRaw),
+		Parts: []filterapi.ConfigBundlePart{
 			{Name: "p0", Path: "parts/000"},
 			{Name: "p1", Path: "parts/001"},
 		},
@@ -27,7 +29,7 @@ func TestReassembleBundleConfig(t *testing.T) {
 		"parts/001": cfgRaw[10:],
 	}
 
-	cfg, err := ReassembleBundleConfig(index, func(part ConfigBundlePart) ([]byte, error) {
+	cfg, err := ReassembleBundleConfig(index, func(part filterapi.ConfigBundlePart) ([]byte, error) {
 		return parts[part.Path], nil
 	})
 	require.NoError(t, err)
@@ -36,23 +38,23 @@ func TestReassembleBundleConfig(t *testing.T) {
 }
 
 func TestReassembleBundleConfig_ChecksumMismatch(t *testing.T) {
-	index := &ConfigBundleIndex{
-		Checksum: ConfigBundleChecksum([]byte("different")),
-		Parts: []ConfigBundlePart{
+	index := &filterapi.ConfigBundleIndex{
+		Checksum: filterapi.ConfigBundleChecksum([]byte("different")),
+		Parts: []filterapi.ConfigBundlePart{
 			{Name: "p0", Path: "parts/000"},
 		},
 	}
-	_, err := ReassembleBundleConfig(index, func(_ ConfigBundlePart) ([]byte, error) {
+	_, err := ReassembleBundleConfig(index, func(_ filterapi.ConfigBundlePart) ([]byte, error) {
 		return []byte("version: dev\n"), nil
 	})
 	require.ErrorContains(t, err, "bundle checksum mismatch")
-	require.ErrorIs(t, err, ErrBundleChecksumMismatch)
+	require.ErrorIs(t, err, filterapi.ErrBundleChecksumMismatch)
 }
 
 func TestUnmarshalConfigBundleIndex(t *testing.T) {
-	raw, err := yaml.Marshal(&ConfigBundleIndex{
+	raw, err := yaml.Marshal(&filterapi.ConfigBundleIndex{
 		Checksum: "abc",
-		Parts:    []ConfigBundlePart{{Name: "p0", Path: "parts/000"}},
+		Parts:    []filterapi.ConfigBundlePart{{Name: "p0", Path: "parts/000"}},
 	})
 	require.NoError(t, err)
 	_, err = UnmarshalConfigBundleIndex(raw)
@@ -66,11 +68,11 @@ func TestUnmarshalConfigBundleIndex(t *testing.T) {
 }
 
 func TestReassembleBundleConfig_ReadError(t *testing.T) {
-	index := &ConfigBundleIndex{
-		Checksum: ConfigBundleChecksum([]byte("v")),
-		Parts:    []ConfigBundlePart{{Name: "p0", Path: "parts/000"}},
+	index := &filterapi.ConfigBundleIndex{
+		Checksum: filterapi.ConfigBundleChecksum([]byte("v")),
+		Parts:    []filterapi.ConfigBundlePart{{Name: "p0", Path: "parts/000"}},
 	}
-	_, err := ReassembleBundleConfig(index, func(_ ConfigBundlePart) ([]byte, error) {
+	_, err := ReassembleBundleConfig(index, func(_ filterapi.ConfigBundlePart) ([]byte, error) {
 		return nil, errors.New("boom")
 	})
 	require.ErrorContains(t, err, "failed to read bundle part")

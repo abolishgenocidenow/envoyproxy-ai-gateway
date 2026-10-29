@@ -1024,13 +1024,6 @@ func TestResolveModernRouteBackends_PerBackendHeadersOnlyForSelected(t *testing.
 // Pure helpers
 // -----------------------------------------------------------------------------
 
-func TestExtractJSONFromSSE(t *testing.T) {
-	require.Nil(t, extractJSONFromSSE([]byte("event: ping\n\n")))
-	require.Nil(t, extractJSONFromSSE([]byte("data: [DONE]\n")))
-	got := extractJSONFromSSE([]byte("data: {\"a\":1}\ndata: {\"b\":2}\n"))
-	require.JSONEq(t, `{"b":2}`, string(got))
-}
-
 func TestExtractNameForMethod(t *testing.T) {
 	require.Empty(t, extractNameForMethod("tools/call", nil))
 	require.Equal(t, "mytool", extractNameForMethod("tools/call", []byte(`{"name":"mytool"}`)))

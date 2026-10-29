@@ -6,7 +6,6 @@
 package translator
 
 import (
-	"bytes"
 	"cmp"
 	"encoding/base64"
 	"fmt"
@@ -16,14 +15,14 @@ import (
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream"
-	"k8s.io/utils/ptr"
 
 	anthropicschema "github.com/envoyproxy/ai-gateway/internal/apischema/anthropic"
 	"github.com/envoyproxy/ai-gateway/internal/apischema/awsbedrock"
 	"github.com/envoyproxy/ai-gateway/internal/internalapi"
 	"github.com/envoyproxy/ai-gateway/internal/json"
-	"github.com/envoyproxy/ai-gateway/internal/metrics"
+	"github.com/envoyproxy/ai-gateway/internal/ptr"
 	"github.com/envoyproxy/ai-gateway/internal/tracing/tracingapi"
+	"github.com/envoyproxy/ai-gateway/usage"
 )
 
 // NewAnthropicToAWSBedrockTranslator creates a translator for Anthropic Messages API to AWS Bedrock Converse API.
@@ -32,10 +31,13 @@ func NewAnthropicToAWSBedrockTranslator(modelNameOverride internalapi.ModelNameO
 }
 
 type anthropicToAWSBedrockTranslator struct {
+	amazonState       amazonStreamState
+	usageDecoder      usage.Decoder
 	modelNameOverride internalapi.ModelNameOverride
 	requestModel      internalapi.RequestModel
 	stream            bool
 	bufferedBody      []byte
+	streamLimit       int
 	events            []awsbedrock.ConverseStreamEvent
 	role              string
 	responseID        string
@@ -485,19 +487,24 @@ func (a *anthropicToAWSBedrockTranslator) ResponseHeaders(headers map[string]str
 }
 
 // ResponseBody implements [AnthropicMessagesTranslator.ResponseBody].
-func (a *anthropicToAWSBedrockTranslator) ResponseBody(_ map[string]string, body io.Reader, _ bool, span tracingapi.MessageSpan) (
-	newHeaders []internalapi.Header, newBody []byte, tokenUsage metrics.TokenUsage, responseModel internalapi.ResponseModel, err error,
+func (a *anthropicToAWSBedrockTranslator) ResponseBody(_ map[string]string, body io.Reader, endOfStream bool, span tracingapi.MessageSpan) (
+	newHeaders []internalapi.Header, newBody []byte, tokenUsage usage.TokenUsage, responseModel internalapi.ResponseModel, err error,
 ) {
 	responseModel = a.requestModel
 	if a.stream {
+		defer func() { tokenUsage = a.usageDecoder.Snapshot() }()
+		defer func() {
+			if err == nil && endOfStream && !a.amazonState.terminal {
+				err = ErrMissingTerminal
+			}
+		}()
 		newBody = make([]byte, 0)
-		var buf []byte
-		buf, err = io.ReadAll(body)
+		a.events = nil
+		defer func() { a.events = nil }()
+		err = a.amazonState.read(body, &a.bufferedBody, a.streamLimit, endOfStream, a.appendAmazonEvent)
 		if err != nil {
-			return nil, nil, metrics.TokenUsage{}, "", fmt.Errorf("failed to read body: %w", err)
+			return nil, newBody, tokenUsage, responseModel, err
 		}
-		a.bufferedBody = append(a.bufferedBody, buf...)
-		a.extractAmazonEventStreamEvents()
 
 		// Pre-scan for metadata usage so it's available when emitting message_delta.
 		for i := range a.events {
@@ -508,9 +515,9 @@ func (a *anthropicToAWSBedrockTranslator) ResponseBody(_ map[string]string, body
 
 		for i := range a.events {
 			event := &a.events[i]
-			if usage := event.Usage; usage != nil {
-				tokenUsage = metrics.ExtractTokenUsageFromExplicitCaching(usage.InputTokens, usage.OutputTokens,
-					usage.CacheReadInputTokens, usage.CacheWriteInputTokens)
+			if tokenCounts := event.Usage; tokenCounts != nil {
+				tokenUsage = usage.ExtractTokenUsageFromExplicitCaching(tokenCounts.InputTokens, tokenCounts.OutputTokens,
+					tokenCounts.CacheReadInputTokens, tokenCounts.CacheWriteInputTokens)
 			}
 			a.convertEventToAnthropicSSE(event, &newBody)
 		}
@@ -519,7 +526,7 @@ func (a *anthropicToAWSBedrockTranslator) ResponseBody(_ map[string]string, body
 
 	var bedrockResp awsbedrock.ConverseResponse
 	if err = json.NewDecoder(body).Decode(&bedrockResp); err != nil {
-		return nil, nil, metrics.TokenUsage{}, "", fmt.Errorf("failed to unmarshal body: %w", err)
+		return nil, nil, usage.TokenUsage{}, "", fmt.Errorf("failed to unmarshal body: %w", err)
 	}
 
 	anthropicResp := &anthropicschema.MessagesResponse{
@@ -583,7 +590,7 @@ func (a *anthropicToAWSBedrockTranslator) ResponseBody(_ map[string]string, body
 
 	// Convert usage.
 	if bedrockResp.Usage != nil {
-		tokenUsage = metrics.ExtractTokenUsageFromExplicitCaching(
+		tokenUsage = usage.ExtractTokenUsageFromExplicitCaching(
 			bedrockResp.Usage.InputTokens, bedrockResp.Usage.OutputTokens,
 			bedrockResp.Usage.CacheReadInputTokens, bedrockResp.Usage.CacheWriteInputTokens,
 		)
@@ -605,36 +612,30 @@ func (a *anthropicToAWSBedrockTranslator) ResponseBody(_ map[string]string, body
 
 	newBody, err = json.Marshal(anthropicResp)
 	if err != nil {
-		return nil, nil, metrics.TokenUsage{}, "", fmt.Errorf("failed to marshal body: %w", err)
+		return nil, nil, usage.TokenUsage{}, "", fmt.Errorf("failed to marshal body: %w", err)
 	}
 	newHeaders = []internalapi.Header{{contentLengthHeaderName, strconv.Itoa(len(newBody))}}
 	return
 }
 
-// extractAmazonEventStreamEvents extracts [awsbedrock.ConverseStreamEvent] from the buffered body.
-func (a *anthropicToAWSBedrockTranslator) extractAmazonEventStreamEvents() {
-	r := bytes.NewReader(a.bufferedBody)
-	dec := eventstream.NewDecoder()
-	clear(a.events)
-	a.events = a.events[:0]
-	var lastRead int64
-	for {
-		msg, err := dec.Decode(r, nil)
-		if err != nil {
-			a.bufferedBody = a.bufferedBody[lastRead:]
-			return
-		}
-		var event awsbedrock.ConverseStreamEvent
-		eventType := msg.Headers.Get(":event-type")
-		if eventType != nil {
-			event.EventType = eventType.String()
-		}
-		if err := json.Unmarshal(msg.Payload, &event); err == nil {
-			a.events = append(a.events, event)
-		}
-		lastRead = r.Size() - int64(r.Len())
+func (a *anthropicToAWSBedrockTranslator) appendAmazonEvent(msg eventstream.Message) error {
+	a.usageDecoder.Schema = "AWSBedrock"
+	if _, err := a.usageDecoder.Observe(msg.Payload); err != nil {
+		return err
 	}
+	var event awsbedrock.ConverseStreamEvent
+	if eventType := msg.Headers.Get(":event-type"); eventType != nil {
+		event.EventType = eventType.String()
+	}
+	if err := json.Unmarshal(msg.Payload, &event); err != nil {
+		return fmt.Errorf("decode bedrock event payload: %w", err)
+	}
+	a.events = append(a.events, event)
+	return nil
 }
+
+// SetStreamLimit sets the maximum retained binary frame size in bytes.
+func (a *anthropicToAWSBedrockTranslator) SetStreamLimit(limit int) { a.streamLimit = limit }
 
 func (a *anthropicToAWSBedrockTranslator) convertEventToAnthropicSSE(event *awsbedrock.ConverseStreamEvent, out *[]byte) {
 	switch event.EventType {

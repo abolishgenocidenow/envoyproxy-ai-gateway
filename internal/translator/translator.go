@@ -17,8 +17,8 @@ import (
 	"github.com/envoyproxy/ai-gateway/internal/apischema/openai/tokenize"
 	typesafeschema "github.com/envoyproxy/ai-gateway/internal/apischema/typesafe"
 	"github.com/envoyproxy/ai-gateway/internal/internalapi"
-	"github.com/envoyproxy/ai-gateway/internal/metrics"
 	"github.com/envoyproxy/ai-gateway/internal/tracing/tracingapi"
+	"github.com/envoyproxy/ai-gateway/usage"
 )
 
 const (
@@ -69,7 +69,7 @@ type Translator[ReqT any, SpanT any] interface {
 	ResponseBody(respHeaders map[string]string, body io.Reader, endOfStream bool, span SpanT) (
 		newHeaders []internalapi.Header,
 		mutatedBody []byte,
-		tokenUsage metrics.TokenUsage,
+		tokenUsage usage.TokenUsage,
 		responseModel internalapi.ResponseModel,
 		err error,
 	)

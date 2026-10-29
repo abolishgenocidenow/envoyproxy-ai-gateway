@@ -16,8 +16,8 @@ import (
 	"github.com/envoyproxy/ai-gateway/internal/apischema/openai"
 	"github.com/envoyproxy/ai-gateway/internal/internalapi"
 	"github.com/envoyproxy/ai-gateway/internal/json"
-	"github.com/envoyproxy/ai-gateway/internal/metrics"
 	"github.com/envoyproxy/ai-gateway/internal/tracing/tracingapi"
+	"github.com/envoyproxy/ai-gateway/usage"
 )
 
 // NewEmbeddingOpenAIToOpenAITranslator implements [Factory] for OpenAI to OpenAI translation for embeddings.
@@ -68,10 +68,14 @@ func (o *openAIToOpenAITranslatorV1Embedding) ResponseHeaders(map[string]string)
 // so we return the actual model from the response body which may differ from the requested model
 // (e.g., request "text-embedding-3-small" → response with specific version).
 func (o *openAIToOpenAITranslatorV1Embedding) ResponseBody(_ map[string]string, body io.Reader, _ bool, span tracingapi.EmbeddingsSpan) (
-	newHeaders []internalapi.Header, newBody []byte, tokenUsage metrics.TokenUsage, responseModel internalapi.ResponseModel, err error,
+	newHeaders []internalapi.Header, newBody []byte, tokenUsage usage.TokenUsage, responseModel internalapi.ResponseModel, err error,
 ) {
+	raw, readErr := io.ReadAll(body)
+	if readErr != nil {
+		return nil, nil, tokenUsage, "", readErr
+	}
 	var resp openai.EmbeddingResponse
-	if err := json.NewDecoder(body).Decode(&resp); err != nil {
+	if err = json.Unmarshal(raw, &resp); err != nil {
 		return nil, nil, tokenUsage, "", fmt.Errorf("failed to unmarshal body: %w", err)
 	}
 
@@ -81,8 +85,12 @@ func (o *openAIToOpenAITranslatorV1Embedding) ResponseBody(_ map[string]string, 
 	}
 
 	// Embeddings don't return output tokens; populate input and total when provided.
-	tokenUsage.SetInputTokens(uint32(resp.Usage.PromptTokens)) //nolint:gosec
-	tokenUsage.SetTotalTokens(uint32(resp.Usage.TotalTokens))  //nolint:gosec
+	decoder := usage.Decoder{Schema: "OpenAI"}
+	tokenUsage, err = decoder.Observe(raw)
+	if err != nil {
+		return nil, nil, tokenUsage, "", err
+	}
+
 	responseModel = resp.Model
 	return
 }

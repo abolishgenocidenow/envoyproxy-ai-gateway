@@ -26,6 +26,7 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 
 	"github.com/envoyproxy/ai-gateway/internal/filterapi"
+	"github.com/envoyproxy/ai-gateway/internal/filterconfig"
 	"github.com/envoyproxy/ai-gateway/internal/internalapi"
 	"github.com/envoyproxy/ai-gateway/internal/json"
 )
@@ -450,7 +451,7 @@ backends:
 	partPath := filepath.Join(configBundlePath, filepath.FromSlash(part.Path))
 	require.NoError(t, os.MkdirAll(filepath.Dir(partPath), 0o700))
 	require.NoError(t, os.WriteFile(partPath, configRaw, 0o600))
-	indexRaw, err := filterapi.MarshalConfigBundleIndex(&filterapi.ConfigBundleIndex{
+	indexRaw, err := filterconfig.MarshalConfigBundleIndex(&filterapi.ConfigBundleIndex{
 		Checksum: filterapi.ConfigBundleChecksum(configRaw),
 		Parts:    []filterapi.ConfigBundlePart{part},
 	})

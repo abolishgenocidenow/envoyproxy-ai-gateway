@@ -17,15 +17,15 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream"
-	"k8s.io/utils/ptr"
 
 	"github.com/envoyproxy/ai-gateway/internal/apischema/awsbedrock"
 	"github.com/envoyproxy/ai-gateway/internal/apischema/openai"
 	"github.com/envoyproxy/ai-gateway/internal/internalapi"
 	"github.com/envoyproxy/ai-gateway/internal/json"
-	"github.com/envoyproxy/ai-gateway/internal/metrics"
+	"github.com/envoyproxy/ai-gateway/internal/ptr"
 	"github.com/envoyproxy/ai-gateway/internal/redaction"
 	"github.com/envoyproxy/ai-gateway/internal/tracing/tracingapi"
+	"github.com/envoyproxy/ai-gateway/usage"
 )
 
 // NewChatCompletionOpenAIToAWSBedrockTranslator implements [Factory] for OpenAI to AWS Bedrock translation.
@@ -37,9 +37,12 @@ func NewChatCompletionOpenAIToAWSBedrockTranslator(modelNameOverride internalapi
 // Note: This uses the Converse API directly, not Bedrock's OpenAI-compatible API:
 // https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_Converse.html
 type openAIToAWSBedrockTranslatorV1ChatCompletion struct {
+	amazonState       amazonStreamState
+	usageDecoder      usage.Decoder
 	modelNameOverride internalapi.ModelNameOverride
 	stream            bool
 	bufferedBody      []byte
+	streamLimit       int
 	events            []awsbedrock.ConverseStreamEvent
 	// role is from MessageStartEvent in chunked messages, and used for all openai chat completion chunk choices.
 	// Translator is created for each request/response stream inside external processor, accordingly the role is not reused by multiple streams.
@@ -167,7 +170,7 @@ func (o *openAIToAWSBedrockTranslatorV1ChatCompletion) RequestBody(_ []byte, ope
 		}
 	}
 
-	newBody, err = json.Marshal(bedrockReq)
+	newBody, err = json.MarshalWithSortedKeys(bedrockReq)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to marshal body: %w", err)
 	}
@@ -353,24 +356,29 @@ func (o *openAIToAWSBedrockTranslatorV1ChatCompletion) ResponseError(respHeaders
 // is exactly what gets executed. The response does not contain a model field, so we return
 // the request model that was originally sent.
 func (o *openAIToAWSBedrockTranslatorV1ChatCompletion) ResponseBody(_ map[string]string, body io.Reader, endOfStream bool, span tracingapi.ChatCompletionSpan) (
-	newHeaders []internalapi.Header, newBody []byte, tokenUsage metrics.TokenUsage, responseModel string, err error,
+	newHeaders []internalapi.Header, newBody []byte, tokenUsage usage.TokenUsage, responseModel string, err error,
 ) {
 	responseModel = o.requestModel
 	if o.stream {
+		defer func() { tokenUsage = o.usageDecoder.Snapshot() }()
+		defer func() {
+			if err == nil && endOfStream && !o.amazonState.terminal {
+				err = ErrMissingTerminal
+			}
+		}()
 		newBody = make([]byte, 0)
-		var buf []byte
-		buf, err = io.ReadAll(body)
+		o.events = nil
+		defer func() { o.events = nil }()
+		err = o.amazonState.read(body, &o.bufferedBody, o.streamLimit, endOfStream, o.appendAmazonEvent)
 		if err != nil {
-			return nil, nil, metrics.TokenUsage{}, "", fmt.Errorf("failed to read body: %w", err)
+			return nil, newBody, tokenUsage, responseModel, err
 		}
-		o.bufferedBody = append(o.bufferedBody, buf...)
-		o.extractAmazonEventStreamEvents()
 
 		for i := range o.events {
 			event := &o.events[i]
-			if usage := event.Usage; usage != nil {
-				tokenUsage = metrics.ExtractTokenUsageFromExplicitCaching(usage.InputTokens, usage.OutputTokens,
-					usage.CacheReadInputTokens, usage.CacheWriteInputTokens)
+			if tokenCounts := event.Usage; tokenCounts != nil {
+				tokenUsage = usage.ExtractTokenUsageFromExplicitCaching(tokenCounts.InputTokens, tokenCounts.OutputTokens,
+					tokenCounts.CacheReadInputTokens, tokenCounts.CacheWriteInputTokens)
 			}
 			oaiEvent, ok := o.convertEvent(event)
 			if !ok {
@@ -378,7 +386,7 @@ func (o *openAIToAWSBedrockTranslatorV1ChatCompletion) ResponseBody(_ map[string
 			}
 			err = serializeOpenAIChatCompletionChunk(oaiEvent, &newBody)
 			if err != nil {
-				return nil, nil, metrics.TokenUsage{}, "", fmt.Errorf("failed to marshal streaming event: %w", err)
+				return nil, nil, usage.TokenUsage{}, "", fmt.Errorf("failed to marshal streaming event: %w", err)
 			}
 			if span != nil {
 				span.RecordResponseChunk(oaiEvent)
@@ -393,7 +401,7 @@ func (o *openAIToAWSBedrockTranslatorV1ChatCompletion) ResponseBody(_ map[string
 
 	var bedrockResp awsbedrock.ConverseResponse
 	if err = json.NewDecoder(body).Decode(&bedrockResp); err != nil {
-		return nil, nil, metrics.TokenUsage{}, "", fmt.Errorf("failed to unmarshal body: %w", err)
+		return nil, nil, usage.TokenUsage{}, "", fmt.Errorf("failed to unmarshal body: %w", err)
 	}
 	// Bedrock can return HTTP 200 with a body that has no "output" field
 	// (e.g. Coral framework errors like UnknownOperationException, guardrail
@@ -401,7 +409,7 @@ func (o *openAIToAWSBedrockTranslatorV1ChatCompletion) ResponseBody(_ map[string
 	// surface a real error to the caller instead of panicking with a nil
 	// pointer dereference on bedrockResp.Output.Message below.
 	if bedrockResp.Output == nil {
-		return nil, nil, metrics.TokenUsage{}, responseModel, fmt.Errorf(
+		return nil, nil, usage.TokenUsage{}, responseModel, fmt.Errorf(
 			"bedrock response missing 'output' (stopReason=%q)",
 			ptr.Deref(bedrockResp.StopReason, ""),
 		)
@@ -421,7 +429,7 @@ func (o *openAIToAWSBedrockTranslatorV1ChatCompletion) ResponseBody(_ map[string
 
 	// Convert token usage.
 	if bedrockResp.Usage != nil {
-		tokenUsage = metrics.ExtractTokenUsageFromExplicitCaching(bedrockResp.Usage.InputTokens, bedrockResp.Usage.OutputTokens,
+		tokenUsage = usage.ExtractTokenUsageFromExplicitCaching(bedrockResp.Usage.InputTokens, bedrockResp.Usage.OutputTokens,
 			bedrockResp.Usage.CacheReadInputTokens, bedrockResp.Usage.CacheWriteInputTokens)
 		totalTokens, _ := tokenUsage.TotalTokens()
 		inputTokens, _ := tokenUsage.InputTokens()
@@ -507,7 +515,7 @@ func (o *openAIToAWSBedrockTranslatorV1ChatCompletion) ResponseBody(_ map[string
 
 	newBody, err = json.Marshal(openAIResp)
 	if err != nil {
-		return nil, nil, metrics.TokenUsage{}, "", fmt.Errorf("failed to marshal body: %w", err)
+		return nil, nil, usage.TokenUsage{}, "", fmt.Errorf("failed to marshal body: %w", err)
 	}
 	if span != nil {
 		span.RecordResponse(openAIResp)
@@ -518,29 +526,32 @@ func (o *openAIToAWSBedrockTranslatorV1ChatCompletion) ResponseBody(_ map[string
 
 // extractAmazonEventStreamEvents extracts [awsbedrock.ConverseStreamEvent] from the buffered body.
 // The extracted events are stored in the processor's events field.
-func (o *openAIToAWSBedrockTranslatorV1ChatCompletion) extractAmazonEventStreamEvents() {
-	// TODO: Maybe reuse the reader and decoder.
-	r := bytes.NewReader(o.bufferedBody)
-	dec := eventstream.NewDecoder()
-	clear(o.events)
-	o.events = o.events[:0]
-	var lastRead int64
-	for {
-		msg, err := dec.Decode(r, nil)
-		if err != nil {
-			o.bufferedBody = o.bufferedBody[lastRead:]
-			return
-		}
-		var event awsbedrock.ConverseStreamEvent
-		eventType := msg.Headers.Get(":event-type")
-		if eventType != nil {
-			event.EventType = eventType.String()
-		}
-		if err := json.Unmarshal(msg.Payload, &event); err == nil {
-			o.events = append(o.events, event)
-		}
-		lastRead = r.Size() - int64(r.Len())
+func (o *openAIToAWSBedrockTranslatorV1ChatCompletion) extractAmazonEventStreamEvents() error {
+	data := o.bufferedBody
+	o.bufferedBody = nil
+	o.events = nil
+	return readAmazonEventStream(bytes.NewReader(data), &o.bufferedBody, o.streamLimit, false, o.appendAmazonEvent)
+}
+
+func (o *openAIToAWSBedrockTranslatorV1ChatCompletion) appendAmazonEvent(msg eventstream.Message) error {
+	o.usageDecoder.Schema = "AWSBedrock"
+	if _, err := o.usageDecoder.Observe(msg.Payload); err != nil {
+		return err
 	}
+	var event awsbedrock.ConverseStreamEvent
+	if eventType := msg.Headers.Get(":event-type"); eventType != nil {
+		event.EventType = eventType.String()
+	}
+	if err := json.Unmarshal(msg.Payload, &event); err != nil {
+		return fmt.Errorf("decode bedrock event payload: %w", err)
+	}
+	o.events = append(o.events, event)
+	return nil
+}
+
+// SetStreamLimit sets the maximum retained binary frame size in bytes.
+func (o *openAIToAWSBedrockTranslatorV1ChatCompletion) SetStreamLimit(limit int) {
+	o.streamLimit = limit
 }
 
 var emptyString = ""
@@ -565,7 +576,7 @@ func (o *openAIToAWSBedrockTranslatorV1ChatCompletion) convertEvent(event *awsbe
 		if event.Usage == nil {
 			return chunk, false
 		}
-		tokenUsage := metrics.ExtractTokenUsageFromExplicitCaching(event.Usage.InputTokens, event.Usage.OutputTokens,
+		tokenUsage := usage.ExtractTokenUsageFromExplicitCaching(event.Usage.InputTokens, event.Usage.OutputTokens,
 			event.Usage.CacheReadInputTokens, event.Usage.CacheWriteInputTokens)
 		totalTokens, _ := tokenUsage.TotalTokens()
 		inputTokens, _ := tokenUsage.InputTokens()
